@@ -57,10 +57,11 @@ jobs:
           set -euo pipefail
           printf '%s' 'local-only-ci-owner-passphrase-000000000000' > "$RUNNER_TEMP/bridge-owner-password"
           chmod 644 "$RUNNER_TEMP/bridge-owner-password"
-          trap 'docker rm -f bridge-smoke >/dev/null 2>&1 || true; rm -f "$RUNNER_TEMP/bridge-owner-password"' EXIT
+          trap 'docker rm -f bridge-smoke >/dev/null 2>&1 || true; docker volume rm bridge-smoke-data >/dev/null 2>&1 || true; rm -f "$RUNNER_TEMP/bridge-owner-password"' EXIT
+          docker volume create bridge-smoke-data > /dev/null
           docker run --detach --name bridge-smoke --network none --read-only \
             --cap-drop ALL --security-opt no-new-privileges:true \
-            --tmpfs /data:uid=65532,gid=65532,mode=0700 \
+            --mount type=volume,src=bridge-smoke-data,dst=/data \
             --mount "type=bind,src=$RUNNER_TEMP/bridge-owner-password,dst=/run/secrets/owner_password,readonly" \
             --env GITHUB_ACCOUNT=ci-example \
             --env PUBLIC_URL=https://bridge.example \
