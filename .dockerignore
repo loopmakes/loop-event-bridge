@@ -1,0 +1,6 @@
+.git
+.env
+secrets
+*.zip
+state.json
+state.json.*

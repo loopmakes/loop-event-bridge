@@ -1,0 +1,7 @@
+.env
+secrets/
+data/
+loop-event-bridge
+*.zip
+*.test
+coverage.out

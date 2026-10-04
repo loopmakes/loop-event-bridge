@@ -1,0 +1,46 @@
+services:
+  bridge:
+    build: .
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      PUBLIC_URL: https://${BRIDGE_DOMAIN:?Set BRIDGE_DOMAIN}
+      OAUTH_CLIENT_ID: ${OAUTH_CLIENT_ID:?Set the predefined ChatGPT client ID}
+      OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI:?Copy the exact redirect URI from ChatGPT}
+      OWNER_PASSWORD_FILE: /run/secrets/owner_password
+      OAUTH_STATE_FILE: /data/oauth.json
+      STATE_FILE: /data/state.json
+      CALLBACK_HOSTS: ${CALLBACK_HOSTS:-}
+      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-colthreepv/symmetro}
+      GITHUB_AUTHOR: ${GITHUB_AUTHOR:-loopmakes}
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-300}
+      # For private repositories or a higher rate limit, add the optional token
+      # secret using compose.github-token.yaml. Public GitHub access needs none.
+    secrets:
+      - owner_password
+    volumes:
+      - bridge-data:/data
+    networks:
+      - traefik
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${TRAEFIK_NETWORK:?Set TRAEFIK_NETWORK}
+      - traefik.http.routers.loop-event-bridge.rule=Host(`${BRIDGE_DOMAIN}`)
+      - traefik.http.routers.loop-event-bridge.entrypoints=${TRAEFIK_ENTRYPOINT:?Set TRAEFIK_ENTRYPOINT}
+      - traefik.http.routers.loop-event-bridge.tls=true
+      - traefik.http.routers.loop-event-bridge.tls.certresolver=${TRAEFIK_CERT_RESOLVER:?Set TRAEFIK_CERT_RESOLVER}
+      - traefik.http.services.loop-event-bridge.loadbalancer.server.port=8080
+    # No host ports. Port 8081 is container-loopback-only and is not routed.
+
+secrets:
+  owner_password:
+    file: ./secrets/owner_password
+volumes:
+  bridge-data:
+networks:
+  traefik:
+    external: true
+    name: ${TRAEFIK_NETWORK}
