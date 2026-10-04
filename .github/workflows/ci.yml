@@ -42,3 +42,28 @@ jobs:
           persist-credentials: false
       - name: Build container image without publishing
         run: docker build --pull --tag loop-event-bridge:ci .
+      - name: Offline container smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' 'local-only-ci-owner-passphrase-000000000000' > "$RUNNER_TEMP/bridge-owner-password"
+          chmod 644 "$RUNNER_TEMP/bridge-owner-password"
+          trap 'docker rm -f bridge-smoke >/dev/null 2>&1 || true; rm -f "$RUNNER_TEMP/bridge-owner-password"' EXIT
+          docker run --detach --name bridge-smoke --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges:true \
+            --tmpfs /data:uid=65532,gid=65532,mode=0700 \
+            --mount "type=bind,src=$RUNNER_TEMP/bridge-owner-password,dst=/run/secrets/owner_password,readonly" \
+            --env PUBLIC_URL=https://bridge.example \
+            --env OAUTH_CLIENT_ID=local-ci-client \
+            --env OAUTH_REDIRECT_URI=https://client.example/callback \
+            --env OWNER_PASSWORD_FILE=/run/secrets/owner_password \
+            loop-event-bridge:ci
+          for attempt in $(seq 1 30); do
+            if docker exec bridge-smoke /loop-event-bridge healthcheck; then
+              echo 'Offline non-root container startup and healthcheck passed'
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs bridge-smoke
+          exit 1

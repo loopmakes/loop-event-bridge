@@ -20,7 +20,7 @@ An additional source review identified and corrected expiry cleanup, acknowledge
 
 ## Not run / not established
 
-- Local Docker was unavailable. The [CI workflow](https://github.com/loopmakes/loop-event-bridge/actions/workflows/ci.yml) now builds the Docker image without publishing it; consult the run for the exact commit and result
+- Local Docker was unavailable. The [CI workflow](https://github.com/loopmakes/loop-event-bridge/actions/workflows/ci.yml) now builds the Docker image and tests non-root startup/health with networking disabled, without publishing it; consult the run for the exact commit and result
 - Docker Compose runtime: not run
 - Deployment behind a real Traefik instance: not run
 - Live GitHub polling by this service with an operator token: not run
