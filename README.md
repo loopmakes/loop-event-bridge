@@ -1,5 +1,7 @@
 # loop-event-bridge (experimental)
 
+[![CI](https://github.com/loopmakes/loop-event-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/loopmakes/loop-event-bridge/actions/workflows/ci.yml)
+
 A small Go service that turns changes in an allowlisted author's GitHub pull requests into MCP Events. Run one container behind your existing Traefik HTTPS endpoint. GitHub polling is deterministic: unchanged snapshots produce no callbacks and invoke no model. This service has no model API integration.
 
 **The MCP event implementation is experimental.** Local mocked tests do not prove your ChatGPT account can discover events, subscribe, or start a dot run. Treat the first real test event received in your chat as the integration acceptance gate. A successful webhook HTTP response acknowledges receipt, not model execution.
