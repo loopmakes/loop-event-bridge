@@ -21,6 +21,32 @@ func env(k, d string) string {
 	}
 	return d
 }
+
+// loadGitHubToken prefers a configured file and never exposes its path or contents
+// in errors. A broken file configuration must not silently select another token.
+func loadGitHubToken() (string, error) {
+	source := "GITHUB_TOKEN"
+	token := os.Getenv(source)
+	if file := os.Getenv("GITHUB_TOKEN_FILE"); file != "" {
+		source = "GITHUB_TOKEN_FILE"
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			return "", errors.New("GITHUB_TOKEN_FILE could not be read")
+		}
+		token = string(raw)
+	}
+	token = strings.TrimSpace(token)
+	if token == "" && source == "GITHUB_TOKEN_FILE" {
+		return "", errors.New("GITHUB_TOKEN_FILE must contain a non-empty token")
+	}
+	for _, ch := range token {
+		if ch <= ' ' || ch >= 127 {
+			return "", fmt.Errorf("%s must contain a single ASCII token without whitespace or control characters", source)
+		}
+	}
+	return token, nil
+}
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -79,13 +105,9 @@ func main() {
 		log.Fatal("state could not be loaded; refusing fresh baseline")
 	}
 	b := &Bridge{store: st, auth: oauth.Authenticate, authorizedOwner: oauth.AuthorizedOwner, callbacks: callbackClient(), hosts: hosts, account: account, resource: resource, issuer: issuer, verified: map[string]time.Time{}}
-	token := ""
-	if f := os.Getenv("GITHUB_TOKEN_FILE"); f != "" {
-		raw, e := os.ReadFile(f)
-		if e != nil {
-			log.Fatal("GitHub token file unavailable")
-		}
-		token = strings.TrimSpace(string(raw))
+	token, e := loadGitHubToken()
+	if e != nil {
+		log.Fatal(e)
 	}
 	secs, e := strconv.Atoi(env("POLL_INTERVAL_SECONDS", "300"))
 	if e != nil || secs < 60 || secs > 86400 {

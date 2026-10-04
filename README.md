@@ -56,7 +56,7 @@ See [OpenAI's MCP Events guide](https://developers.openai.com/plugins/build/mcp-
 
 Your inbox can contain private repository information. OAuth lets ChatGPT access the bridge only after you approve it, and lets that access expire or be revoked.
 
-**No separate login server is needed.** OAuth runs in the same Go process using Fosite. You choose a separate bridge owner password, which you enter only on your own bridge domain. GitHub access uses a different credential stored as a Swarm secret.
+**No separate login server is needed.** OAuth runs in the same Go process using Fosite. You choose a separate bridge owner password, which you enter only on your own bridge domain. GitHub access uses a different credential, stored as a Swarm secret in the supplied template.
 
 <details>
 <summary>What are the three authentication settings?</summary>
@@ -102,6 +102,17 @@ You can deploy first and register the reachable endpoint afterward. Choose a non
    ```
 
 Swarm does not build images or automatically load `.env`. Repeat the export step after edits and in new shells. Keep one replica and the same volume. [Full setup, private registry notes, and upgrades](docs/SWARM.md)
+
+## GitHub token configuration
+
+The process supports two options:
+
+- `GITHUB_TOKEN_FILE`: path to a mounted token file (recommended; the Swarm template uses `/run/secrets/github_token`)
+- `GITHUB_TOKEN`: token supplied directly in the process environment, used only when `GITHUB_TOKEN_FILE` is unset or empty
+
+Leading and trailing whitespace is trimmed in either case. A configured file always takes precedence; an unreadable, empty, or malformed file stops startup instead of falling back to the environment. Tokens must be single ASCII values without internal whitespace or control characters; GitHub validates the credential and its permissions when polling. If neither option supplies a token, the server can start for offline checks, but GitHub polling cannot succeed.
+
+Token values are excluded from logs, errors, and status responses. Environment variables may be visible through container/service inspection and process tooling, so prefer mounted secrets and never commit token values to `.env`, stack files, or source control. The supplied Swarm template continues to use the file option; an exported host `GITHUB_TOKEN` is not automatically passed into its container.
 
 ## How do I know it actually works?
 
