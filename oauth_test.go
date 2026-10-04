@@ -54,6 +54,9 @@ func embeddedTestStart(t *testing.T, o *EmbeddedOAuth, c EmbeddedOAuthConfig) (s
 	if w.Code != http.StatusOK {
 		t.Fatalf("authorization page failed: %d %s", w.Code, w.Body.String())
 	}
+	if w.Header().Get("Referrer-Policy") != "same-origin" {
+		t.Fatal("consent must preserve the same-origin native form Origin")
+	}
 	match := regexp.MustCompile(`name="flow" value="([A-Za-z0-9_-]+)"`).FindStringSubmatch(w.Body.String())
 	if len(match) != 2 {
 		t.Fatal("consent form omitted flow")
@@ -229,7 +232,7 @@ func TestEmbeddedOAuthRejectsUnsafeRequests(t *testing.T) {
 			}
 		})
 	}
-	for _, kind := range []string{"wrong origin", "missing cookie", "wrong flow", "wrong password", "expired flow"} {
+	for _, kind := range []string{"wrong origin", "null origin", "missing origin", "missing cookie", "wrong cookie", "wrong flow", "wrong password", "expired flow"} {
 		t.Run(kind, func(t *testing.T) {
 			flow, cookie := embeddedTestStart(t, o, c)
 			form := url.Values{"flow": {flow}, "password": {embeddedTestPassword}, "decision": {"allow"}}
@@ -237,6 +240,12 @@ func TestEmbeddedOAuthRejectsUnsafeRequests(t *testing.T) {
 			switch kind {
 			case "wrong origin":
 				origin = "https://other.example"
+			case "null origin":
+				origin = "null"
+			case "missing origin":
+				origin = ""
+			case "wrong cookie":
+				cookie.Value = "wrong"
 			case "missing cookie":
 				cookie = nil
 			case "wrong flow":

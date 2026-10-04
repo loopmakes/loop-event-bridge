@@ -5,3 +5,5 @@ loop-event-bridge
 *.zip
 *.test
 coverage.out
+
+node_modules/

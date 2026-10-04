@@ -285,6 +285,9 @@ func (o *EmbeddedOAuth) startConsent(w http.ResponseWriter, r *http.Request) {
 	}
 	o.pending[flow] = embeddedConsent{query: query, cookieSum: sha256.Sum256([]byte(cookie)), expires: now.Add(embeddedConsentTTL)}
 	http.SetCookie(w, &http.Cookie{Name: embeddedCookieName, Value: cookie, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode, MaxAge: int(embeddedConsentTTL.Seconds())})
+	// Native form POSTs under no-referrer carry Origin: null. Preserve the
+	// same-origin Origin required by finishConsent without cross-origin referrers.
+	w.Header().Set("Referrer-Policy", "same-origin")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = embeddedConsentPage.Execute(w, struct{ Flow, Client, Resource string }{flow, o.config.ClientID, o.config.PublicURL})
 }
