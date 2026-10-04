@@ -1,110 +1,127 @@
-# loop-event-bridge (experimental)
+# loop-event-bridge
 
 [![CI](https://github.com/loopmakes/loop-event-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/loopmakes/loop-event-bridge/actions/workflows/ci.yml)
 
-A small Go service that turns changes in an allowlisted author's GitHub pull requests into MCP Events. Run one container behind your existing Traefik HTTPS endpoint. GitHub polling is deterministic: unchanged snapshots produce no callbacks and invoke no model. This service has no model API integration.
+**Your GitHub notification inbox, delivered as MCP Events.** A small Go service for Docker Swarm, behind your existing Traefik. One container includes the poller, event delivery, and OAuth login.
 
-**The MCP event implementation is experimental.** Local mocked tests do not prove your ChatGPT account can discover events, subscribe, or start a dot run. Treat the first real test event received in your chat as the integration acceptance gate. A successful webhook HTTP response acknowledges receipt, not model execution.
-
-## What it does
-
-- Implements MCP 2.0 (2026-07-28) event discovery, subscribe, refresh and unsubscribe
-- Verifies callbacks before delivering application events; signs using Standard Webhooks
-- Persists subscriptions, initial baseline, observed fingerprints and delivery queue atomically
-- Emits `bridge.test` only when the operator invokes the local container command
-- Emits `github.pull_request.changed` for observed PR state/head changes, published reviews (pending drafts are ignored), conversation comments and inline review comments
-- Defaults to repository `colthreepv/symmetro`, PR author `loopmakes`; both are configurable, exact allowlist filters
-- Exposes only a read-only `bridge_status` MCP tool; it does not duplicate the GitHub plugin's editing tools
-- Never pushes commits, comments on GitHub, executes remote commands, or calls a model
-
-## Run behind your existing Traefik
-
-No separate identity provider is needed. OAuth is embedded in this process using the Fosite library: one predefined public client, authorization code + S256 PKCE, local owner approval, short-lived access tokens, refresh and revocation. This is a single-owner experimental service, not a general identity platform. GitHub access is separate and read-only; public repositories can be polled without a token.
-
-1. Copy `.env.example` to `.env`. Set your HTTPS domain, existing Traefik network, HTTPS entrypoint and certificate resolver. The template does not install or change Traefik.
-2. In the ChatGPT custom MCP/plugin setup, use `https://YOUR_DOMAIN/mcp` and OAuth with a predefined public client. Configure one client ID and copy the exact redirect URI from that management page into `.env`. The token endpoint authentication method is `none`; there is no client secret. Do not guess the redirect URI. Availability and UI differ by account; if predefined public-client setup is not offered, stop and resolve that integration mismatch rather than disabling authentication.
-3. Create a private `secrets` directory and put a strong, unique 32–72-character ASCII owner password in `secrets/owner_password`. It is the password you enter on the bridge's approval page, not your GitHub password. Keep this directory owner-only. Docker Compose mounts the file into the non-root container, so the mounted file must be readable by UID 65532. Do not commit it or put it in `.env`.
-4. Build and start the container yourself:
-
-```sh
-docker compose config
-docker compose up -d --build
-docker compose logs --tail=50 bridge
+```text
+GitHub Notifications inbox
+          │  check every 5 minutes
+          ▼
+  loop-event-bridge ── changed notification ──▶ ChatGPT / dot
+          │                                    follows your
+          └─ no change? stay quiet             instructions
 ```
 
-For optional GitHub read-only authentication, put your existing token in `secrets/github_token` and use the override consistently:
+The bridge never calls a model. Quiet checks still use GitHub's API, but send no events.
 
-```sh
-docker compose -f compose.yaml -f compose.github-token.yaml up -d --build
-```
+**Experimental:** automated tests cover the code and offline container startup. A real Swarm + Traefik + ChatGPT connection still needs testing. A successful `bridge.test` response in your chat is the acceptance test, not merely a healthy container or webhook HTTP 200.
 
-5. Connect/rescan the MCP server in ChatGPT. Its authorization page is on your own HTTPS domain. Confirm the client and scope and enter the bridge owner password there. Never paste that password into chat. `bridge_status` should be available after connection.
-6. Ask ChatGPT to subscribe to `bridge.test` with repository `colthreepv/symmetro` and author `loopmakes`, and to acknowledge the event. With `CALLBACK_HOSTS` empty, the request fails closed and reports `requestedHost`. Verify this is the client's expected callback host, put that exact hostname in `CALLBACK_HOSTS` and recreate the container with the same Compose command. Retry the subscription. No wildcard domains are accepted.
-7. Once callback verification and subscription creation succeed, trigger the harmless test locally:
+## What would I use it for?
 
-```sh
-docker compose exec bridge /loop-event-bridge emit-test
-```
+For example: someone requests your review on a PR. If GitHub adds or updates a notification in your inbox, the bridge sends `github.notification.changed`. Your instruction to ChatGPT might be:
 
-8. Confirm the event actually arrives in your chat and starts the expected response. A queued message or HTTP 2xx alone is insufficient. Then ask ChatGPT to subscribe to `github.pull_request.changed` with the same filters and your desired reporting instructions. Do not assume discovery alone proves subscriptions are available on your account.
-9. Ask ChatGPT to stop monitoring; verify unsubscribe removes the subscription. Also restart the container and verify an unchanged GitHub snapshot causes no duplicate notification.
+> Monitor my GitHub notifications. Tell me when something needs my attention, with the repository, title, and reason. Don't change anything on GitHub.
 
-The container needs outbound HTTPS to GitHub and the configured callback hosts. It publishes no host port. Its healthcheck confirms process responsiveness, not GitHub or ChatGPT delivery health; use `bridge_status` for polling/queue health. The existing Traefik HTTPS termination must be correct, and the domain must resolve to it.
+It covers the configured account's **whole Notifications inbox**: all returned repositories, subject types, and reasons, including read notifications. GitHub notification preferences and account access determine what appears there. It cannot see every action across GitHub.
 
-### Persistence and revocation
+The first complete scan quietly records a starting point, so you won't receive a flood of old notifications. The bridge only makes GET requests to GitHub; it never marks a notification read or done.
 
-Keep the `bridge-data` volume across upgrades. It holds both event state and OAuth grants/keys. The service initializes its own internal OAuth signing material only on your first deployment. Protect volume backups as credentials; do not share the files. Use one replica only. Deleting the volume loses grants, subscriptions, and deduplication state.
+## How do MCP Events fit in?
 
-To revoke all access, stop the service. Changing the owner password (or client/domain configuration) and restarting invalidates existing grants; old event subscriptions are then pruned. Ordinary disconnect should revoke through the client when supported. Never leave a publicly reachable no-auth variant running.
+ChatGPT connects to `/mcp`, discovers two event types, then subscribes with a callback destination. Both take empty filter arguments: `{}`.
 
-## Delivery and polling semantics
+- `github.notification.changed`: a new or changed inbox notification
+- `bridge.test`: a harmless event you trigger locally to check the connection
 
-The first complete GitHub scan establishes a silent baseline. Later complete scans compare stable record fingerprints. Partial scans and rate-limit failures never advance the baseline. All collection endpoints are paginated, capped at 100 pages each; a cap is an error, never silently truncated history. A poll has a two-minute overall timeout and a 64 MiB aggregate response-body budget. This conservative full-history scanner is intended for small repositories, not thousands of PRs.
+The bridge checks the callback and signs deliveries. ChatGPT decides what to do with an event using your instructions. The only regular MCP tool is `bridge_status`, which reports polling and delivery health.
 
-A normal poll defaults to every 300 seconds, with a 60-second minimum. GitHub API calls still happen when nothing changes. Public unauthenticated GitHub access has a small rate limit; an optional read-only token can raise it. Read access to the allowlisted repository's pull requests/issues is sufficient; no write permissions are needed. Reviews/comments by any actor are included only when the PR itself is authored by the configured author.
+<details>
+<summary>Show the protocol steps</summary>
 
-State and queue are saved together before delivery. Event IDs remain stable across retries and restart. A crash after the receiver accepts an event but before acknowledgment is persisted can produce a duplicate. Delivery is at-least-once within bounded retries, not exactly once. Transient failures back off, stopping after eight attempts; permanent 4xx (except 408/429), 410 and 413 are not retried. Up to 100 terminal failures are retained for seven days for operator inspection; expired/revoked subscriptions and their queue are removed. The read-only status exposes a dead-letter count. Queue capacity is 10,000 entries; hitting it stops snapshot advancement.
+1. `server/discover` advertises MCP protocol `2026-07-28` and event support
+2. `events/list` describes the two events and their payloads
+3. `events/subscribe` supplies the event name, `{}`, callback URL, and signing secret
+4. Callback verification must pass before the subscription becomes active
+5. Changed observations enter a persistent queue and are sent with Standard Webhooks signatures
+6. The client refreshes expiring subscriptions with `events/subscribe`, and stops them with `events/unsubscribe`
 
-`cursor` is null: protocol replay is not implemented. After an outage, the next complete scan detects records still present and state differences from the saved snapshot; intermediate transitions, deleted comments and events during expired subscriptions may be missed. Multiple rapid edits may coalesce. Review edits/dismissals retain GitHub’s submitted_at timestamp because that endpoint supplies no updated_at. This is an explicit limitation, not a lossless GitHub event log. No unsupported `gap`, `terminated`, stream, or polling delivery modes are advertised.
+Subscriptions last at most one hour. The client must keep refreshing them. There is no protocol replay (`cursor` is null). An HTTP 2xx acknowledges webhook receipt; the client processes it asynchronously.
 
-Subscriptions have a finite maximum lifetime of one hour. The client must refresh them. Callback secrets rotate with a five-minute overlap. Successful verification is cached for five minutes by owner, callback and secret. Unsubscribe clears queued items; a request already in flight may finish.
+See [OpenAI's MCP Events guide](https://developers.openai.com/plugins/build/mcp-events) and [delivery details](docs/OPERATIONS.md).
 
-## Safety boundaries
+</details>
 
-Callback hosts must be explicitly configured. HTTPS on port 443 is required. Every connection resolves and rejects non-public addresses, dials only the validated address and preserves TLS hostname verification. Redirects and environment proxy settings are disabled for callbacks. Do not copy a guessed callback hostname: get the real destination from the client setup/request and allow only the required host.
+## Why does it need OAuth if it's just for me?
 
-Callbacks, signing secrets and queue state are sensitive. The state file is mode 0600; protect and encrypt volume backups. Logs/status omit tokens, callback URLs, signing secrets and comment text. Comment bodies are fingerprinted to detect edits but are not forwarded. The operator-only `/test` endpoint binds to loopback inside the container; do not publish it or change that binding.
+Your inbox can contain private repository information. OAuth lets ChatGPT access the bridge only after you approve it, and lets that access expire or be revoked.
 
-The process is non-root and the container has no shell. Use a single replica per state volume. Disk corruption or invalid persisted state fails startup rather than resetting deduplication silently. Stop the service to revoke all subscriptions immediately. Never expose an unauthenticated deployment.
+**No separate login server is needed.** OAuth runs in the same Go process using Fosite. You choose a separate bridge owner password, which you enter only on your own bridge domain. GitHub access uses a different credential stored as a Swarm secret.
 
-## Protocol references
+<details>
+<summary>What are the three authentication settings?</summary>
 
-- [OpenAI MCP Events](https://developers.openai.com/plugins/build/mcp-events)
-- [OpenAI MCP authentication](https://developers.openai.com/plugins/build/auth)
-- [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28)
-- [Standard Webhooks](https://github.com/standard-webhooks/standard-webhooks)
-- [GitHub REST pull requests](https://docs.github.com/en/rest/pulls/pulls)
+- **GitHub classic personal access token:** reads your notification inbox. Use the `notifications` scope. This GitHub scope also permits notification changes, but this program uses GET only. Fine-grained and GitHub App tokens do not work for this endpoint. [GitHub documentation](https://docs.github.com/en/rest/activity/notifications)
+- **Bridge owner password:** a strong, unique, 32–72-character ASCII password you supply. It protects the bridge's approval screen; it is not your GitHub password
+- **Public OAuth client ID:** matches the client registered in ChatGPT. It is not a password. This service uses authorization code + S256 PKCE, token endpoint authentication method `none`, and no client secret
 
-## Development
+The example uses OpenAI's documented stable redirect for issuer-aware servers, so you can deploy before registering the connection. Before approving access, compare it with the exact URI in ChatGPT's management page; update and redeploy if different. The service supports one predefined client, not dynamic registration or CIMD. [OpenAI authentication guide](https://developers.openai.com/plugins/build/auth#redirect-url)
 
-Use Go 1.26 or newer:
+</details>
 
-```sh
-go test ./...
-go test -race ./...
-go vet ./...
-go build .
-```
+## What do I need before deploying?
 
-Tests use synthetic local/mock HTTP endpoints and temporary test keys only. No production secrets or GitHub data are bundled.
+- A Linux Docker Swarm, existing Traefik, HTTPS domain, and shared overlay network. The template targets **Traefik v3**; [v2 needs one label change](docs/SWARM.md#using-traefik-v2)
+- A registry where you can push your own image, accessible to the chosen Swarm node
+- ChatGPT/plugin management access that supports a **predefined public OAuth client** and MCP Events. Work/web, desktop Work with Cloud, or a dot are the documented event surfaces; workspace controls still apply
+- Your own GitHub classic token and bridge owner password, entered manually into Swarm secrets
 
-## Integration limits and operating notes
+You can deploy first and register the reachable endpoint afterward. Choose a non-secret public client ID in `.env`; its initial redirect is the documented ChatGPT default. If your account doesn't offer predefined public-client setup or event subscriptions, resolve that before relying on the bridge; don't turn authentication off.
 
-- This is intentionally single-owner and single-process. It has not received an independent security audit
-- Fosite handles OAuth mechanics, but browser consent and file persistence are application code. A crash between protocol storage steps can require reconnecting; operations fail closed
-- Preserve the public `Host` header through Traefik. The embedded OAuth endpoints reject requests for another host
-- Access tokens last 15 minutes; rotating refresh tokens last up to 30 days. Password/config rotation invalidates existing grants on restart
-- Source read permissions must remain available. Removed GitHub access pauses polling without advancing the baseline; callback access follows the owner's live OAuth grant
-- The service exposes no remote write tools. A future automation that acts on events needs its own explicit permissions in the client
-- Modern clients must send the 2026-07-28 request metadata and mirrored HTTP headers. Older MCP clients are not supported
-- Scope is a small-repository polling bridge. A large repository may exceed API quotas or the two-minute scan deadline; choose a webhook-based source adapter for that scale
+## How do I run it on my Swarm?
+
+1. Copy `.env.example` to `.env` and fill in the domain, Traefik settings, image name, and expected `GITHUB_ACCOUNT`. Choose a public client ID; keep the documented redirect initially. Keep passwords and tokens out of this file
+2. Follow the short [Swarm preparation steps](docs/SWARM.md#prepare-the-swarm-once): create your two secrets manually, label exactly one state-owning node, and create its persistent volume
+3. Load your reviewed configuration, then build and push **your own** image:
+
+   ```sh
+   set -a
+   . ./.env
+   set +a
+   docker build --tag "$BRIDGE_IMAGE" .
+   docker push "$BRIDGE_IMAGE"
+   ```
+
+4. From a Swarm manager with the same variables exported, validate and deploy:
+
+   ```sh
+   docker stack config --compose-file stack.yaml > /dev/null
+   docker stack deploy --compose-file stack.yaml loop-event-bridge
+   docker service ps loop-event-bridge_bridge
+   docker service logs --tail 50 loop-event-bridge_bridge
+   ```
+
+Swarm does not build images or automatically load `.env`. Repeat the export step after edits and in new shells. Keep one replica and the same volume. [Full setup, private registry notes, and upgrades](docs/SWARM.md)
+
+## How do I know it actually works?
+
+1. In ChatGPT's MCP management page, add `https://YOUR_DOMAIN/mcp` using OAuth, a predefined public client with your configured ID, and authentication method `none`. **Before approving access**, compare the displayed redirect URI with `.env`; update and redeploy if different. Then connect, enter your bridge owner password on your bridge's HTTPS approval page, and check for `bridge_status`
+2. Ask ChatGPT: **“Subscribe to `bridge.test` with arguments `{}` and tell me when the test arrives.”** With `CALLBACK_HOSTS` initially empty, the subscription is refused and reports `requestedHost`
+3. Verify that hostname belongs to the expected client callback. Put the exact hostname in `CALLBACK_HOSTS`, reload `.env`, redeploy the same stack, and retry the subscription. No wildcard or guessed hosts
+4. After subscription and callback verification succeed, run this **on the node hosting the bridge**:
+
+   ```sh
+   docker ps --filter label=com.docker.swarm.service.name=loop-event-bridge_bridge
+   docker exec YOUR_RUNNING_CONTAINER_ID /loop-event-bridge emit-test
+   ```
+
+5. Confirm ChatGPT receives the test and responds. Then ask it to monitor `github.notification.changed` with `{}` and your desired instructions
+6. Test stopping monitoring, and verify `bridge_status` shows the subscription removed. Restart the service and confirm unchanged notifications are not resent
+
+## What should I keep in mind?
+
+Polling defaults to 300 seconds, with a 60-second minimum; GitHub can require a longer wait. Rapid updates may combine into one observation. There is no lossless event history, and retries can produce duplicates.
+
+Keep `/data/state.json` **and** `/data/oauth.json`: they hold delivery/deduplication state and OAuth credentials. Protect backups. This is a single-owner service and has not had an independent security audit.
+
+[Operations and limitations](docs/OPERATIONS.md) · [Development](docs/DEV.md) · [Verification record](VERIFICATION.md)

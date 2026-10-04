@@ -57,10 +57,9 @@ func main() {
 	if e != nil {
 		log.Fatal("OAuth configuration invalid: ", e)
 	}
-	repo := env("GITHUB_REPOSITORY", "colthreepv/symmetro")
-	author := env("GITHUB_AUTHOR", "loopmakes")
-	if !githubRepositoryPattern.MatchString(repo) || author == "" || strings.ContainsAny(author, " /?#") {
-		log.Fatal("invalid GitHub filters")
+	account := strings.TrimSpace(os.Getenv("GITHUB_ACCOUNT"))
+	if account == "" || strings.ContainsAny(account, " /?#") {
+		log.Fatal("GITHUB_ACCOUNT must name the intended authenticated account")
 	}
 	hosts := map[string]bool{}
 	for _, h := range strings.Split(os.Getenv("CALLBACK_HOSTS"), ",") {
@@ -79,7 +78,7 @@ func main() {
 	if e != nil {
 		log.Fatal("state could not be loaded; refusing fresh baseline")
 	}
-	b := &Bridge{store: st, auth: oauth.Authenticate, authorizedOwner: oauth.AuthorizedOwner, callbacks: callbackClient(), hosts: hosts, repo: repo, author: author, resource: resource, issuer: issuer, verified: map[string]time.Time{}}
+	b := &Bridge{store: st, auth: oauth.Authenticate, authorizedOwner: oauth.AuthorizedOwner, callbacks: callbackClient(), hosts: hosts, account: account, resource: resource, issuer: issuer, verified: map[string]time.Time{}}
 	token := ""
 	if f := os.Getenv("GITHUB_TOKEN_FILE"); f != "" {
 		raw, e := os.ReadFile(f)

@@ -22,10 +22,7 @@ type Delivery struct {
 	URL    string `json:"url"`
 	Secret string `json:"secret,omitempty"`
 }
-type Arguments struct {
-	Repository string `json:"repository"`
-	Author     string `json:"author"`
-}
+type Arguments struct{}
 type Subscription struct {
 	ID, Owner, Name string
 	Arguments       Arguments

@@ -11,12 +11,15 @@ import (
 
 const maxQueue = 10000
 
-func (b *Bridge) applyObservations(observations []Observation) error {
+func (b *Bridge) applyObservations(observations []Observation, accountID string) error {
 	b.store.mu.Lock()
 	defer b.store.mu.Unlock()
 	next := b.store.copy()
 	b.pruneState(&next, time.Now())
-	key := b.repo + "/" + b.author
+	if accountID == "" {
+		return errors.New("GitHub account identity missing")
+	}
+	key := "notifications/" + accountID
 	baseline := next.Baselines[key]
 	now := time.Now().UTC()
 	for _, o := range observations {
@@ -28,9 +31,9 @@ func (b *Bridge) applyObservations(observations []Observation) error {
 		if !baseline {
 			continue
 		}
-		e := Event{ID: "evt_" + randomID(), Name: "github.pull_request.changed", Timestamp: o.Timestamp, Data: o.Data}
+		e := Event{ID: "evt_" + randomID(), Name: "github.notification.changed", Timestamp: o.Timestamp, Data: o.Data}
 		for id, s := range next.Subscriptions {
-			if s.Name == e.Name && (b.authorizedOwner == nil || b.authorizedOwner(s.Owner)) && s.Expires.After(now) && s.Arguments.Repository == b.repo && s.Arguments.Author == b.author {
+			if s.Name == e.Name && (b.authorizedOwner == nil || b.authorizedOwner(s.Owner)) && s.Expires.After(now) {
 				if len(next.Queue) >= maxQueue {
 					return errors.New("queue capacity reached; snapshot not advanced")
 				}
@@ -54,7 +57,7 @@ func (b *Bridge) enqueueTest() error {
 			if len(next.Queue) >= maxQueue {
 				return errors.New("queue full")
 			}
-			next.Queue = append(next.Queue, Pending{SubscriptionID: id, Event: Event{ID: "evt_" + randomID(), Name: s.Name, Timestamp: now, Data: map[string]any{"repository": b.repo, "author": b.author, "message": "Operator-triggered bridge connectivity test"}}, Next: now})
+			next.Queue = append(next.Queue, Pending{SubscriptionID: id, Event: Event{ID: "evt_" + randomID(), Name: s.Name, Timestamp: now, Data: map[string]any{"message": "Operator-triggered bridge connectivity test"}}, Next: now})
 			n++
 		}
 	}
@@ -150,21 +153,20 @@ func (b *Bridge) pollLoop(ctx context.Context, github *http.Client, token string
 			return
 		case <-poll.C:
 			pollCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-			observations, err := FetchGitHub(pollCtx, github, "https://api.github.com", token, b.repo, b.author)
+			observations, accountID, minPoll, err := FetchNotifications(pollCtx, github, "https://api.github.com", token, b.account)
 			cancel()
-			delay := interval
+			delay := nextPollDelay(interval, minPoll, 0)
 			if err == nil {
-				err = b.applyObservations(observations)
+				err = b.applyObservations(observations, accountID)
 			}
 			if err != nil {
 				failures++
-				delay = max(interval, time.Duration(1<<min(failures, 10))*time.Second)
-				delay = min(delay, time.Hour)
+				delay = nextPollDelay(interval, minPoll, failures)
 				var ge *GitHubHTTPError
 				if errors.As(err, &ge) && ge.RetryAfter > delay {
 					delay = ge.RetryAfter
 				}
-				b.recordError("GitHub polling or snapshot persistence failed; inspect API access and storage")
+				b.recordError("GitHub inbox polling: " + err.Error())
 			} else {
 				failures = 0
 			}
@@ -178,7 +180,7 @@ func (b *Bridge) pollLoop(ctx context.Context, github *http.Client, token string
 func (b *Bridge) pruneState(s *State, now time.Time) bool {
 	changed := false
 	for id, sub := range s.Subscriptions {
-		if !sub.Expires.After(now) || (b.authorizedOwner != nil && !b.authorizedOwner(sub.Owner)) {
+		if (sub.Name != "bridge.test" && sub.Name != "github.notification.changed") || !sub.Expires.After(now) || (b.authorizedOwner != nil && !b.authorizedOwner(sub.Owner)) {
 			delete(s.Subscriptions, id)
 			changed = true
 		}
@@ -216,4 +218,12 @@ func (b *Bridge) maintenance() {
 			log.Print("maintenance persistence failed")
 		}
 	}
+}
+
+func nextPollDelay(interval, sourceMinimum time.Duration, failures int) time.Duration {
+	delay := max(interval, sourceMinimum)
+	if failures > 0 {
+		delay = max(delay, min(time.Hour, time.Duration(1<<min(failures, 12))*time.Second))
+	}
+	return delay
 }

@@ -22,7 +22,7 @@ func fixture(t *testing.T) *Bridge {
 	if e != nil {
 		t.Fatal(e)
 	}
-	return &Bridge{store: s, repo: "colthreepv/symmetro", author: "loopmakes", hosts: map[string]bool{"callback.example": true}, callbacks: &http.Client{}, verified: map[string]time.Time{}, auth: func(*http.Request) (string, error) { return "owner", nil }}
+	return &Bridge{store: s, account: "loopmakes", hosts: map[string]bool{"callback.example": true}, callbacks: &http.Client{}, verified: map[string]time.Time{}, auth: func(*http.Request) (string, error) { return "owner", nil }}
 }
 func testSecret() string {
 	return "whsec_" + base64.StdEncoding.EncodeToString([]byte(strings.Repeat("x", 32)))
@@ -49,7 +49,7 @@ func TestSubscriptionLifecycle(t *testing.T) {
 		data, _ := json.Marshal(map[string]string{"challenge": challenge["challenge"]})
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(data))), Header: http.Header{}}, nil
 	})
-	p := subscriptionRequest{Name: "bridge.test", Arguments: Arguments{b.repo, b.author}, Delivery: Delivery{Mode: "webhook", URL: "https://callback.example/events", Secret: testSecret()}}
+	p := subscriptionRequest{Name: "bridge.test", Arguments: Arguments{}, Delivery: Delivery{Mode: "webhook", URL: "https://callback.example/events", Secret: testSecret()}}
 	raw, _ := json.Marshal(p)
 	res, e := b.call(context.Background(), "owner", "events/subscribe", raw)
 	if e != nil {
@@ -81,16 +81,16 @@ func TestSubscriptionLifecycle(t *testing.T) {
 }
 func TestBaselineDedupAndRestart(t *testing.T) {
 	b := fixture(t)
-	b.store.state.Subscriptions["s"] = Subscription{ID: "s", Name: "github.pull_request.changed", Arguments: Arguments{b.repo, b.author}, Expires: time.Now().Add(time.Hour)}
+	b.store.state.Subscriptions["s"] = Subscription{ID: "s", Name: "github.notification.changed", Arguments: Arguments{}, Expires: time.Now().Add(time.Hour)}
 	o := []Observation{{Key: "pr/1", Fingerprint: "a", Timestamp: time.Now(), Data: map[string]any{"kind": "state"}}}
-	if e := b.applyObservations(o); e != nil {
+	if e := b.applyObservations(o, "42"); e != nil {
 		t.Fatal(e)
 	}
 	if len(b.store.state.Queue) != 0 {
 		t.Fatal("initial flood")
 	}
 	o[0].Fingerprint = "b"
-	if e := b.applyObservations(o); e != nil {
+	if e := b.applyObservations(o, "42"); e != nil {
 		t.Fatal(e)
 	}
 	if len(b.store.state.Queue) != 1 {
@@ -101,7 +101,7 @@ func TestBaselineDedupAndRestart(t *testing.T) {
 		t.Fatal(e)
 	}
 	b.store = s
-	if e := b.applyObservations(o); e != nil {
+	if e := b.applyObservations(o, "42"); e != nil {
 		t.Fatal(e)
 	}
 	if len(s.state.Queue) != 1 {
@@ -173,5 +173,50 @@ func TestStatePreservesLargeIdentifiers(t *testing.T) {
 	raw, _ := json.Marshal(s.copy().Queue[0].Event.Data)
 	if !strings.Contains(string(raw), "9007199254740993") {
 		t.Fatalf("identifier rounded: %s", raw)
+	}
+}
+
+func TestEmptyNotificationsInboxEstablishesBaseline(t *testing.T) {
+	b := fixture(t)
+	b.store.state.Subscriptions["s"] = Subscription{ID: "s", Name: "github.notification.changed", Expires: time.Now().Add(time.Hour)}
+	if err := b.applyObservations(nil, "account-1"); err != nil {
+		t.Fatal(err)
+	}
+	observations := []Observation{{Key: "thread-1", Fingerprint: "new", Timestamp: time.Now(), Data: map[string]any{"account_id": "account-1", "subject_type": "Release", "repository": "other/repository"}}}
+	if err := b.applyObservations(observations, "account-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.store.state.Queue) != 1 {
+		t.Fatal("first new item after empty baseline was missed")
+	}
+}
+func TestNewNotificationsAccountGetsSilentBaseline(t *testing.T) {
+	b := fixture(t)
+	b.store.state.Subscriptions["s"] = Subscription{ID: "s", Name: "github.notification.changed", Expires: time.Now().Add(time.Hour)}
+	observations := []Observation{{Key: "thread", Fingerprint: "one", Timestamp: time.Now(), Data: map[string]any{}}}
+	if err := b.applyObservations(observations, "account-1"); err != nil {
+		t.Fatal(err)
+	}
+	observations[0].Fingerprint = "two"
+	if err := b.applyObservations(observations, "account-2"); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.store.state.Queue) != 0 {
+		t.Fatal("new account history flooded subscriptions")
+	}
+}
+
+func TestPollingHonorsConfiguredAndSourceMinimums(t *testing.T) {
+	for _, tt := range []struct {
+		configured, source, want time.Duration
+		failures                 int
+	}{
+		{5 * time.Minute, 10 * time.Minute, 10 * time.Minute, 0},
+		{24 * time.Hour, time.Minute, 24 * time.Hour, 12},
+		{time.Minute, time.Minute, time.Hour, 12},
+	} {
+		if got := nextPollDelay(tt.configured, tt.source, tt.failures); got != tt.want {
+			t.Fatalf("delay %s, want %s", got, tt.want)
+		}
 	}
 }

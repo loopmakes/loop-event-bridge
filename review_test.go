@@ -36,7 +36,7 @@ func TestReviewSubscriptionLifetimeStartsAfterVerification(t *testing.T) {
 		body, _ := json.Marshal(map[string]string{"challenge": payload["challenge"]})
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(body))), Header: http.Header{}}, nil
 	})
-	p := subscriptionRequest{Name: "bridge.test", Arguments: Arguments{b.repo, b.author}, Delivery: Delivery{Mode: "webhook", URL: "https://callback.example/events", Secret: testSecret()}, TTL: json.RawMessage(`1000`)}
+	p := subscriptionRequest{Name: "bridge.test", Arguments: Arguments{}, Delivery: Delivery{Mode: "webhook", URL: "https://callback.example/events", Secret: testSecret()}, TTL: json.RawMessage(`1000`)}
 	raw, _ := json.Marshal(p)
 	result, rpcErr := b.call(context.Background(), "owner", "events/subscribe", raw)
 	if rpcErr != nil {

@@ -40,6 +40,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Validate Swarm stack configuration
+        run: |
+          BRIDGE_IMAGE=example.invalid/bridge:ci BRIDGE_DOMAIN=bridge.example \
+          TRAEFIK_NETWORK=traefik-public TRAEFIK_ENTRYPOINT=websecure \
+          TRAEFIK_CERT_RESOLVER=letsencrypt BRIDGE_NODE_LABEL=primary \
+          BRIDGE_DATA_VOLUME=bridge-ci-data OWNER_PASSWORD_SECRET=bridge-ci-owner \
+          GITHUB_TOKEN_SECRET=bridge-ci-github GITHUB_ACCOUNT=ci-example \
+          OAUTH_CLIENT_ID=ci-public OAUTH_REDIRECT_URI=https://client.example/callback \
+          docker stack config --compose-file stack.yaml > /dev/null
       - name: Build container image without publishing
         run: docker build --pull --tag loop-event-bridge:ci .
       - name: Offline container smoke test
@@ -53,6 +62,7 @@ jobs:
             --cap-drop ALL --security-opt no-new-privileges:true \
             --tmpfs /data:uid=65532,gid=65532,mode=0700 \
             --mount "type=bind,src=$RUNNER_TEMP/bridge-owner-password,dst=/run/secrets/owner_password,readonly" \
+            --env GITHUB_ACCOUNT=ci-example \
             --env PUBLIC_URL=https://bridge.example \
             --env OAUTH_CLIENT_ID=local-ci-client \
             --env OAUTH_REDIRECT_URI=https://client.example/callback \

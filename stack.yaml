@@ -1,0 +1,90 @@
+# Docker Swarm stack, using your existing Traefik v3 Swarm provider.
+# Load .env into your shell first; docker stack deploy does not load it for you.
+version: "3.8"
+
+services:
+  bridge:
+    # Swarm cannot build images. Build and push this tag yourself first.
+    image: ${BRIDGE_IMAGE:?Set BRIDGE_IMAGE to your registry image tag or digest}
+    user: "65532:65532"
+    read_only: true
+    cap_drop:
+      - ALL
+    # security_opt is unsupported by docker stack deploy; do not assume that
+    # adding no-new-privileges here would enable it. See docs/SWARM.md.
+    stop_grace_period: 20s
+    environment:
+      PUBLIC_URL: https://${BRIDGE_DOMAIN:?Set BRIDGE_DOMAIN}
+      OAUTH_CLIENT_ID: ${OAUTH_CLIENT_ID:?Set the predefined public client ID}
+      OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI:?Copy the exact ChatGPT redirect URI}
+      OWNER_PASSWORD_FILE: /run/secrets/owner_password
+      GITHUB_TOKEN_FILE: /run/secrets/github_token
+      GITHUB_ACCOUNT: ${GITHUB_ACCOUNT:?Set your expected GitHub login}
+      OAUTH_STATE_FILE: /data/oauth.json
+      STATE_FILE: /data/state.json
+      CALLBACK_HOSTS: ${CALLBACK_HOSTS:-}
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-300}
+    secrets:
+      - source: owner_password
+        target: owner_password
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+      - source: github_token
+        target: github_token
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+    volumes:
+      - bridge-data:/data
+    networks:
+      - traefik
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.platform.os == linux
+          # Give this exact label value to ONE node, the state-volume owner.
+          - node.labels.loop-event-bridge == ${BRIDGE_NODE_LABEL:?Set BRIDGE_NODE_LABEL}
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: pause
+      rollback_config:
+        parallelism: 1
+        order: stop-first
+      restart_policy:
+        condition: any
+        delay: 5s
+      # Swarm uses SERVICE labels. Container-level labels do not work here.
+      labels:
+        - traefik.enable=true
+        - traefik.swarm.network=${TRAEFIK_NETWORK:?Set the existing overlay network}
+        - traefik.http.routers.loop-event-bridge.rule=Host(`${BRIDGE_DOMAIN}`)
+        - traefik.http.routers.loop-event-bridge.entrypoints=${TRAEFIK_ENTRYPOINT:?Set your HTTPS entrypoint}
+        - traefik.http.routers.loop-event-bridge.tls=true
+        - traefik.http.routers.loop-event-bridge.tls.certresolver=${TRAEFIK_CERT_RESOLVER:?Set your existing certificate resolver}
+        - traefik.http.routers.loop-event-bridge.service=loop-event-bridge
+        - traefik.http.services.loop-event-bridge.loadbalancer.server.port=8080
+        - traefik.http.services.loop-event-bridge.loadbalancer.passhostheader=true
+    # No published ports. Traefik routes 8080 over the shared overlay network.
+    # The operator endpoint on 8081 binds only to container loopback.
+
+secrets:
+  owner_password:
+    external: true
+    name: ${OWNER_PASSWORD_SECRET:?Set your existing Swarm owner-password secret name}
+  github_token:
+    external: true
+    name: ${GITHUB_TOKEN_SECRET:?Set your existing Swarm GitHub-token secret name}
+
+volumes:
+  bridge-data:
+    external: true
+    name: ${BRIDGE_DATA_VOLUME:?Set the persistent volume name}
+
+networks:
+  traefik:
+    external: true
+    name: ${TRAEFIK_NETWORK}

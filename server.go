@@ -15,14 +15,14 @@ import (
 )
 
 type Bridge struct {
-	authorizedOwner                func(string) bool
-	store                          *Store
-	auth                           func(*http.Request) (string, error)
-	callbacks                      *http.Client
-	hosts                          map[string]bool
-	repo, author, resource, issuer string
-	verifyMu                       sync.Mutex
-	verified                       map[string]time.Time
+	authorizedOwner           func(string) bool
+	store                     *Store
+	auth                      func(*http.Request) (string, error)
+	callbacks                 *http.Client
+	hosts                     map[string]bool
+	account, resource, issuer string
+	verifyMu                  sync.Mutex
+	verified                  map[string]time.Time
 }
 type rpcRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -127,9 +127,13 @@ func objectSchema(props map[string]any, required []string) map[string]any {
 }
 func (b *Bridge) eventDefinitions() []any {
 	str := map[string]any{"type": "string"}
-	input := objectSchema(map[string]any{"repository": map[string]any{"type": "string", "enum": []string{b.repo}}, "author": map[string]any{"type": "string", "enum": []string{b.author}}}, []string{"repository", "author"})
-	return []any{map[string]any{"name": "bridge.test", "description": "Operator-triggered connectivity test; no GitHub changes.", "delivery": []string{"webhook"}, "inputSchema": input, "payloadSchema": objectSchema(map[string]any{"repository": str, "author": str, "message": str}, []string{"repository", "author", "message"})}, map[string]any{"name": "github.pull_request.changed", "description": "Observed state, head commit, published review or comment change on an allowlisted author's pull request. Polling snapshots can coalesce changes; includes all comment/review actors. No historical replay.", "delivery": []string{"webhook"}, "inputSchema": input, "payloadSchema": map[string]any{"type": "object", "properties": map[string]any{"repository": str, "author": str, "pull_request_number": map[string]any{"type": "integer"}, "kind": str, "url": str}, "required": []string{"repository", "author", "pull_request_number", "kind", "url"}, "additionalProperties": true}}}
+	input := objectSchema(map[string]any{}, []string{})
+	return []any{
+		map[string]any{"name": "bridge.test", "description": "Operator-triggered connectivity test; no GitHub changes.", "delivery": []string{"webhook"}, "inputSchema": input, "payloadSchema": objectSchema(map[string]any{"message": str}, []string{"message"})},
+		map[string]any{"name": "github.notification.changed", "description": "A new or updated notification in the configured GitHub account's complete Notifications inbox. Covers all repositories, subject types and reasons without marking anything read. This is the account's subscribed/participating inbox, not every GitHub event. Snapshot polling may coalesce changes; no historical replay.", "delivery": []string{"webhook"}, "inputSchema": input, "payloadSchema": map[string]any{"type": "object", "properties": map[string]any{"account_login": str, "account_id": str, "notification_id": str, "repository": str, "subject_type": str, "title": str, "reason": str, "unread": map[string]any{"type": "boolean"}, "updated_at": str, "api_url": str}, "required": []string{"account_login", "account_id", "notification_id", "repository", "subject_type", "title", "reason", "unread", "updated_at", "api_url"}, "additionalProperties": true}},
+	}
 }
+
 func (b *Bridge) call(ctx context.Context, owner, method string, raw json.RawMessage) (any, *rpcError) {
 	bad := func(msg string) (any, *rpcError) { return nil, &rpcError{-32602, msg, nil} }
 	switch method {
@@ -155,7 +159,7 @@ func (b *Bridge) call(ctx context.Context, owner, method string, raw json.RawMes
 				dead++
 			}
 		}
-		status := map[string]any{"deadLetters": dead, "subscriptions": len(b.store.state.Subscriptions), "queued": len(b.store.state.Queue), "lastPoll": b.store.state.LastPoll, "lastError": b.store.state.LastError, "experimental": true}
+		status := map[string]any{"deadLetters": dead, "subscriptions": len(b.store.state.Subscriptions), "queued": len(b.store.state.Queue), "lastPoll": b.store.state.LastPoll, "lastError": b.store.state.LastError, "experimental": true, "githubAccount": b.account}
 		b.store.mu.Unlock()
 		data, _ := json.Marshal(status)
 		return map[string]any{"content": []any{map[string]any{"type": "text", "text": string(data)}}, "isError": false}, nil
@@ -164,8 +168,8 @@ func (b *Bridge) call(ctx context.Context, owner, method string, raw json.RawMes
 		if decode(raw, &p) != nil {
 			return bad("invalid subscription parameters")
 		}
-		if (p.Name != "bridge.test" && p.Name != "github.pull_request.changed") || p.Arguments.Repository != b.repo || p.Arguments.Author != b.author || p.Delivery.Mode != "webhook" {
-			return bad("event or filters are not authorized")
+		if (p.Name != "bridge.test" && p.Name != "github.notification.changed") || p.Delivery.Mode != "webhook" {
+			return bad("event is not supported or delivery mode is invalid")
 		}
 		if validCallback(p.Delivery.URL, b.hosts) != nil {
 			u, _ := url.Parse(p.Delivery.URL)
