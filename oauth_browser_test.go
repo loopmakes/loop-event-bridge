@@ -27,6 +27,20 @@ func TestEmbeddedOAuthBrowser(t *testing.T) {
 			posts := make(chan observation, 2)
 			callbacks := make(chan *http.Request, 2)
 			callback := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/hostile" {
+					if scenario == "null-origin" {
+						w.Header().Set("Referrer-Policy", "no-referrer")
+					} else {
+						w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+					}
+					w.Header().Set("Content-Type", "text/html")
+					_, _ = w.Write([]byte("<!doctype html><title>Synthetic hostile page</title><body></body>"))
+					return
+				}
+				if r.URL.Path != "/callback" {
+					http.NotFound(w, r)
+					return
+				}
 				callbacks <- r.Clone(context.Background())
 				_, _ = w.Write([]byte("Synthetic callback reached"))
 			}))
@@ -55,10 +69,10 @@ func TestEmbeddedOAuthBrowser(t *testing.T) {
 					posts <- observation{r.Header.Get("Origin"), recorder.Code}
 				}
 			}))
-			server.StartTLS()
 			defer server.Close()
+			origin := "https://" + server.Listener.Addr().String()
 			dir := t.TempDir()
-			config := EmbeddedOAuthConfig{PublicURL: server.URL, ClientID: "synthetic-browser-client", RedirectURI: callback.URL + "/callback", OwnerPasswordFile: filepath.Join(dir, "password"), StateFile: filepath.Join(dir, "state.json")}
+			config := EmbeddedOAuthConfig{PublicURL: origin, ClientID: "synthetic-browser-client", RedirectURI: callback.URL + "/callback", OwnerPasswordFile: filepath.Join(dir, "password"), StateFile: filepath.Join(dir, "state.json")}
 			if err := os.WriteFile(config.OwnerPasswordFile, []byte(embeddedTestPassword), 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -67,6 +81,7 @@ func TestEmbeddedOAuthBrowser(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			server.StartTLS()
 			input, _ := json.Marshal(map[string]string{"origin": server.URL, "query": embeddedTestQuery(config).Encode(), "callback": config.RedirectURI, "password": embeddedTestPassword, "scenario": scenario})
 			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancel()
@@ -81,7 +96,7 @@ func TestEmbeddedOAuthBrowser(t *testing.T) {
 					expectedOrigin = "null"
 				}
 				if scenario == "foreign-origin" {
-					expectedOrigin = "https://foreign.example"
+					expectedOrigin = callback.URL
 				}
 				if scenario == "success" {
 					expectedStatus = http.StatusSeeOther

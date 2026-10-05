@@ -8,6 +8,7 @@ try {
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
   const page = await context.newPage();
   page.setDefaultTimeout(15000);
+  page.on('console', message => { if (message.type() === 'error') console.log(`browser console: ${message.text()}`); });
   const discovery = await page.goto(`${input.origin}/.well-known/oauth-authorization-server`);
   assert.equal(discovery.status(), 200);
   const metadata = await discovery.json();
@@ -21,14 +22,25 @@ try {
     const cookies = await context.cookies();
     await context.addCookies(cookies.map(cookie => ({ ...cookie, value: 'wrong-synthetic-cookie' })));
   }
-  // These two negative tests inject hostile headers; old-policy/success never
-  // intercept or override the browser-generated Origin, Referer, cookies or POST.
+  // A genuinely foreign document submits the captured flow with the correct
+  // synthetic password. Same-site loopback ports retain the Strict cookie, so
+  // the server's Origin check must reject it. No request headers are forged.
   if (['foreign-origin', 'null-origin'].includes(input.scenario)) {
-    await page.route('**/oauth/authorize', async route => {
-      const headers = await route.request().allHeaders();
-      headers.origin = input.scenario === 'null-origin' ? 'null' : 'https://foreign.example';
-      await route.continue({ headers });
-    });
+    const flow = await page.locator('input[name="flow"]').inputValue();
+    await page.goto(`${new URL(input.callback).origin}/hostile`);
+    await page.evaluate(({ action, flow, password }) => {
+      const form = document.createElement('form');
+      form.method = 'post';
+      form.action = action;
+      for (const [name, value] of Object.entries({ flow, password, decision: 'allow' })) {
+        const field = document.createElement('input');
+        field.type = 'hidden'; field.name = name; field.value = value;
+        form.appendChild(field);
+      }
+      const button = document.createElement('button');
+      button.textContent = 'Allow connection'; button.type = 'submit';
+      form.appendChild(button); document.body.appendChild(form);
+    }, { action: metadata.authorization_endpoint, flow, password: input.password });
   }
   const posted = page.waitForResponse(response => response.request().method() === 'POST' && response.url() === metadata.authorization_endpoint);
   await page.getByRole('button', { name: 'Allow connection' }).click();

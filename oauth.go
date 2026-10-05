@@ -41,6 +41,27 @@ func authHTTPSURL(raw string) bool {
 		u.Hostname() != "" && u.User == nil && u.Fragment == "" && !strings.Contains(raw, "#") && u.Opaque == ""
 }
 
+// embeddedCallbackOrigin constructs one CSP host-source, never a raw URL or
+// policy fragment. CSP does not support IPv6 host-sources; DNS names (including
+// punycode) and IPv4 are accepted. Path and query never become policy text.
+func embeddedCallbackOrigin(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || !authHTTPSURL(raw) {
+		return "", errors.New("OAuth callback must be an HTTPS URL")
+	}
+	host := strings.ToLower(u.Hostname())
+	for _, c := range host {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '.') {
+			return "", errors.New("OAuth callback hostname must be ASCII DNS or IPv4 for browser CSP")
+		}
+	}
+	origin := "https://" + host
+	if port := u.Port(); port != "" {
+		origin += ":" + port
+	}
+	return origin, nil
+}
+
 // EmbeddedOAuthConfig sets up one pre-registered public OAuth client. The
 // operator supplies a strong owner password file and an exact client redirect.
 // StateFile belongs on the private persistent data volume, outside any web root.
@@ -74,17 +95,18 @@ func (r *embeddedRate) allow(now time.Time, limit int, window time.Duration) boo
 // mechanics. Browser owner authentication and consent are intentionally local.
 // This implementation is single-process; do not share StateFile across replicas.
 type EmbeddedOAuth struct {
-	mu           sync.Mutex // serializes multi-step Fosite storage operations
-	config       EmbeddedOAuthConfig
-	host         string
-	owner        string
-	passwordHash []byte
-	provider     fosite.OAuth2Provider
-	store        *oauthStore
-	pending      map[string]embeddedConsent
-	pages        embeddedRate
-	logins       embeddedRate
-	tokens       embeddedRate
+	mu             sync.Mutex // serializes multi-step Fosite storage operations
+	config         EmbeddedOAuthConfig
+	callbackOrigin string
+	host           string
+	owner          string
+	passwordHash   []byte
+	provider       fosite.OAuth2Provider
+	store          *oauthStore
+	pending        map[string]embeddedConsent
+	pages          embeddedRate
+	logins         embeddedRate
+	tokens         embeddedRate
 }
 
 func NewEmbeddedOAuth(c EmbeddedOAuthConfig) (*EmbeddedOAuth, error) {
@@ -94,6 +116,10 @@ func NewEmbeddedOAuth(c EmbeddedOAuthConfig) (*EmbeddedOAuth, error) {
 	}
 	if !authHTTPSURL(c.RedirectURI) {
 		return nil, errors.New("OAuth redirect URI must be the exact HTTPS callback from client setup")
+	}
+	callbackOrigin, err := embeddedCallbackOrigin(c.RedirectURI)
+	if err != nil {
+		return nil, err
 	}
 	if c.ClientID == "" || len(c.ClientID) > 512 || strings.TrimSpace(c.ClientID) != c.ClientID || strings.ContainsAny(c.ClientID, "\r\n\t") {
 		return nil, errors.New("an explicit OAuth public client ID is required")
@@ -150,7 +176,7 @@ func NewEmbeddedOAuth(c EmbeddedOAuthConfig) (*EmbeddedOAuth, error) {
 		compose.OAuth2AuthorizeExplicitFactory, compose.OAuth2RefreshTokenGrantFactory,
 		compose.OAuth2PKCEFactory, compose.OAuth2TokenIntrospectionFactory, compose.OAuth2TokenRevocationFactory)
 	return &EmbeddedOAuth{
-		config: c, host: u.Host, owner: "owner-" + binding, passwordHash: passwordHash,
+		config: c, host: u.Host, callbackOrigin: callbackOrigin, owner: "owner-" + binding, passwordHash: passwordHash,
 		provider: provider, store: store, pending: make(map[string]embeddedConsent),
 	}, nil
 }
@@ -288,6 +314,9 @@ func (o *EmbeddedOAuth) startConsent(w http.ResponseWriter, r *http.Request) {
 	// Native form POSTs under no-referrer carry Origin: null. Preserve the
 	// same-origin Origin required by finishConsent without cross-origin referrers.
 	w.Header().Set("Referrer-Policy", "same-origin")
+	// Chromium applies form-action to the POST redirect too. Permit only self
+	// and the registered callback origin, whose CSP source is validated at startup.
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' "+o.callbackOrigin+"; frame-ancestors 'none'; base-uri 'none'")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = embeddedConsentPage.Execute(w, struct{ Flow, Client, Resource string }{flow, o.config.ClientID, o.config.PublicURL})
 }

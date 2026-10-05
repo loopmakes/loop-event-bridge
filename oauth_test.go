@@ -372,3 +372,40 @@ func TestEmbeddedOAuthExpiredSessions(t *testing.T) {
 		t.Fatal("expired refresh session accepted")
 	}
 }
+
+func TestEmbeddedCallbackCSPOrigin(t *testing.T) {
+	for _, tc := range []struct{ raw, want string }{
+		{"https://chatgpt.com/callback", "https://chatgpt.com"},
+		{"https://CLIENT.Example:8443/callback;param?next=https://other.example/a;form-action=*", "https://client.example:8443"},
+		{"https://127.0.0.1:12345/callback", "https://127.0.0.1:12345"},
+		{"https://xn--bcher-kva.example/callback", "https://xn--bcher-kva.example"},
+	} {
+		got, err := embeddedCallbackOrigin(tc.raw)
+		if err != nil || got != tc.want {
+			t.Errorf("callback %q: got %q, %v; want %q", tc.raw, got, err, tc.want)
+		}
+	}
+	for _, raw := range []string{
+		"https://client.example;form-action/callback", "https://client.example,evil.example/callback",
+		"https://*.example/callback", "https://client.example'unsafe-inline'/callback",
+		"https://[::1]/callback", "https://bücher.example/callback", "https://client.example:*/callback",
+		"http://client.example/callback", "https://user@client.example/callback",
+	} {
+		if got, err := embeddedCallbackOrigin(raw); err == nil {
+			t.Errorf("unsafe CSP callback %q accepted as %q", raw, got)
+		}
+	}
+	o, c := embeddedTestSetup(t)
+	w := httptest.NewRecorder()
+	o.ServeHTTP(w, httptest.NewRequest(http.MethodGet, c.PublicURL+"/oauth/authorize?"+embeddedTestQuery(c).Encode(), nil))
+	want := "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://chatgpt.com; frame-ancestors 'none'; base-uri 'none'"
+	if w.Header().Get("Content-Security-Policy") != want {
+		t.Fatal("consent callback CSP is not restricted to registered origin")
+	}
+	// Non-HTML endpoints keep the original no-referrer policy.
+	w = httptest.NewRecorder()
+	o.ServeHTTP(w, httptest.NewRequest(http.MethodGet, c.PublicURL+"/.well-known/oauth-authorization-server", nil))
+	if w.Header().Get("Referrer-Policy") != "no-referrer" {
+		t.Fatal("non-consent referrer policy changed")
+	}
+}

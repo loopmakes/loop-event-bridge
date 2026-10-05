@@ -12,6 +12,20 @@ test -z "$(gofmt -l *.go)"
 
 Tests use synthetic/mock endpoints and temporary test credentials. Never add real tokens, inbox fixtures with private information, or OAuth state to this repository.
 
+## Native browser OAuth regression tests
+
+The opt-in browser suite uses pinned Playwright Chromium and temporary loopback HTTPS servers. It starts from OAuth discovery, renders the actual consent page, clicks the native form, follows the registered cross-origin callback, and exchanges the synthetic authorization code. No real account, password, grant, or external callback is used.
+
+```sh
+npm ci --ignore-scripts --prefix tests/browser
+(cd tests/browser && npx --no-install playwright install --with-deps chromium)
+LOOP_BROWSER_TEST=1 go test -race -run TestEmbeddedOAuthBrowser -v -count=1 .
+```
+
+The server logs the Origin actually received. The old `no-referrer` response policy is reproduced by a test-only wrapper; it must produce `Origin: null` and HTTP 403. The production consent page must send the configured origin and finish the callback. Negative cases cover wrong passwords, expired flows, missing/wrong cookies, and native forms submitted by a foreign document with foreign/null Origins. No test intercepts or overrides browser-generated request headers. Unit tests additionally reject missing Origins.
+
+Self-signed certificate acceptance is confined to the isolated browser test context. Callback CSP sources support ASCII DNS names (use punycode for IDNs) and IPv4, with optional ports; IPv6 callback literals are rejected because CSP host-sources do not support them. These tests do not change production TLS or authenticate to any deployed bridge.
+
 ## Validate the Swarm template without deploying
 
 With a current Docker CLI installed, this uses only placeholder settings and does not create secrets, pull an image, or deploy a service:
@@ -36,7 +50,7 @@ Use `docker stack config`, not only `docker compose config`: stack deployment us
 
 ## What does CI establish?
 
-CI runs source tests, race detection, vet, and a static build. It validates the stack configuration, builds the container without publishing it, and runs a non-root startup/healthcheck with networking disabled. The offline smoke test has no production GitHub token, so it cannot validate source polling.
+CI runs source tests, race detection, vet, a static build, and the opt-in Chromium OAuth regression suite. It validates the stack configuration, builds the container without publishing it, and runs a non-root startup/healthcheck with networking disabled. The offline smoke test has no production GitHub token, so it cannot validate source polling.
 
 A green run does not establish real Swarm scheduling, secret mounts, volume initialization, Traefik routing, OAuth linking in your account, or a ChatGPT response to a webhook. Use the exact commit's [CI run](https://github.com/loopmakes/loop-event-bridge/actions/workflows/ci.yml), the [verification record](../VERIFICATION.md), and the README's live acceptance steps together.
 
