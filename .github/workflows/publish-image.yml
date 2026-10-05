@@ -1,0 +1,131 @@
+name: Container image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate release version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=dev
+          if [[ "$REF_TYPE" == tag ]]; then
+            [[ "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Expected a vMAJOR.MINOR.PATCH release tag'; exit 1; }
+            version="${REF_NAME#v}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Sign in to GHCR using the temporary job token
+        if: github.ref_type == 'tag'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build both architectures; publish only release tags
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.ref_type == 'tag' }}
+          tags: |
+            ghcr.io/loopmakes/loop-event-bridge:${{ steps.version.outputs.version }}
+            ghcr.io/loopmakes/loop-event-bridge:v${{ steps.version.outputs.version }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            REVISION=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.title=loop-event-bridge
+            org.opencontainers.image.source=https://github.com/loopmakes/loop-event-bridge
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          provenance: mode=min
+          sbom: true
+      - name: Record published digest
+        if: github.ref_type == 'tag'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          printf 'Published ghcr.io/loopmakes/loop-event-bridge:%s\nDigest: %s\n' "$VERSION" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+
+  verify-public:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Verify anonymous pull, platforms, labels, and digest
+        env:
+          EXPECTED_DIGEST: ${{ needs.build.outputs.digest }}
+          VERSION: ${{ needs.build.outputs.version }}
+          REVISION: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Empty client configuration proves no saved registry login is used.
+          export DOCKER_CONFIG="$RUNNER_TEMP/anonymous-docker"
+          mkdir -p "$DOCKER_CONFIG"
+          image="ghcr.io/loopmakes/loop-event-bridge:$VERSION"
+          docker manifest inspect "$image" > "$RUNNER_TEMP/manifest.json"
+          jq -e 'any(.manifests[]; .platform.os == "linux" and .platform.architecture == "amd64") and any(.manifests[]; .platform.os == "linux" and .platform.architecture == "arm64")' "$RUNNER_TEMP/manifest.json"
+          docker pull "$image"
+          docker image inspect "$image" --format '{{json .RepoDigests}}' | jq -e --arg digest "ghcr.io/loopmakes/loop-event-bridge@$EXPECTED_DIGEST" 'index($digest) != null'
+          docker image inspect "$image" --format '{{json .Config.Labels}}' | jq -e --arg version "$VERSION" --arg revision "$REVISION" '.["org.opencontainers.image.version"] == $version and .["org.opencontainers.image.revision"] == $revision'
+          printf '%s' 'local-only-ci-owner-passphrase-000000000000' > "$RUNNER_TEMP/bridge-owner-password"
+          chmod 644 "$RUNNER_TEMP/bridge-owner-password"
+          trap 'docker rm -f bridge-release >/dev/null 2>&1 || true; docker volume rm bridge-release-data >/dev/null 2>&1 || true; rm -f "$RUNNER_TEMP/bridge-owner-password"' EXIT
+          docker volume create bridge-release-data > /dev/null
+          docker run --detach --name bridge-release --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges:true \
+            --mount type=volume,src=bridge-release-data,dst=/data \
+            --mount "type=bind,src=$RUNNER_TEMP/bridge-owner-password,dst=/run/secrets/owner_password,readonly" \
+            --env GITHUB_ACCOUNT=ci-example --env PUBLIC_URL=https://bridge.example \
+            --env OAUTH_CLIENT_ID=local-ci-client --env OAUTH_REDIRECT_URI=https://client.example/callback \
+            --env OWNER_PASSWORD_FILE=/run/secrets/owner_password "$image"
+          healthy=false
+          for attempt in $(seq 1 30); do
+            if docker exec bridge-release /loop-event-bridge healthcheck; then healthy=true; break; fi
+            sleep 1
+          done
+          "$healthy"
+          docker logs bridge-release 2>&1 | grep -F "version=$VERSION revision=$REVISION "
+          docker pull --platform linux/arm64 "$image"
+          docker image inspect "$image" --format '{{.Architecture}}' | grep -x arm64
+          docker pull "ghcr.io/loopmakes/loop-event-bridge:v$VERSION"
+          docker image inspect "ghcr.io/loopmakes/loop-event-bridge:v$VERSION" --format '{{json .RepoDigests}}' | jq -e --arg digest "ghcr.io/loopmakes/loop-event-bridge@$EXPECTED_DIGEST" 'index($digest) != null'
+          printf 'Anonymous pull verified for %s\nDigest: %s\nPlatforms: linux/amd64, linux/arm64\n' "$image" "$EXPECTED_DIGEST" >> "$GITHUB_STEP_SUMMARY"

@@ -1,6 +1,8 @@
-.git
-.env
-secrets
-*.zip
-state.json
-state.json.*
+# Allowlist only the inputs needed to compile the service.
+# Local configuration, credentials, state, plugins, and scripts never enter context.
+**
+!Dockerfile
+!go.mod
+!go.sum
+!*.go
+*_test.go
