@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"net/url"
@@ -176,6 +177,10 @@ func (b *Bridge) call(ctx context.Context, owner, method string, raw json.RawMes
 			host := ""
 			if u != nil {
 				host = u.Hostname()
+			}
+			if method == "events/subscribe" {
+				// Only the parsed hostname is safe to log; URLs and parse errors may contain secrets.
+				log.Printf("events/subscribe callback denied: requestedHost=%q", host)
 			}
 			return nil, &rpcError{-32602, "callback denied; verify its host and configure CALLBACK_HOSTS", map[string]string{"requestedHost": host}}
 		}

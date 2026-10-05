@@ -117,8 +117,8 @@ Token values are excluded from logs, errors, and status responses. Environment v
 ## How do I know it actually works?
 
 1. In ChatGPT's MCP management page, add `https://YOUR_DOMAIN/mcp` using OAuth, a predefined public client with your configured ID, and authentication method `none`. **Before approving access**, compare the displayed redirect URI with `.env`; update and redeploy if different. Then connect, enter your bridge owner password on your bridge's HTTPS approval page, and check for `bridge_status`
-2. Ask ChatGPT: **“Subscribe to `bridge.test` with arguments `{}` and tell me when the test arrives.”** With `CALLBACK_HOSTS` initially empty, the subscription is refused and reports `requestedHost`
-3. Verify that hostname belongs to the expected client callback. Put the exact hostname in `CALLBACK_HOSTS`, reload `.env`, redeploy the same stack, and retry the subscription. No wildcard or guessed hosts
+2. Ask ChatGPT: **“Subscribe to `bridge.test` with arguments `{}` and tell me when the test arrives.”** With `CALLBACK_HOSTS` initially empty, the subscription is refused and reports `requestedHost`. If ChatGPT hides that error detail, note the time of your deliberate test request and check the bridge service logs (for example, `docker service logs --since 5m loop-event-bridge_bridge`) for `events/subscribe callback denied: requestedHost="…"`. This diagnostic logs only the parsed, quoted hostname, never the callback URL or signing secret; an empty hostname means the URL could not provide one. Correlate the log timestamp with your test before using it
+3. Verify that hostname belongs to the expected client callback. Put the exact hostname in `CALLBACK_HOSTS`, reload `.env`, redeploy the same stack, and retry the subscription. The diagnostic is untrusted input, not proof of ownership or automatic approval. No wildcard or guessed hosts
 4. After subscription and callback verification succeed, run this **on the node hosting the bridge**:
 
    ```sh
