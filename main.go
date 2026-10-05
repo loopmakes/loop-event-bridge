@@ -138,8 +138,9 @@ func main() {
 			}
 		}(srv)
 	}
+	version, revision := buildIdentity()
+	log.Printf("experimental event bridge started version=%s revision=%s poll_interval=%s; account integration requires end-to-end verification", version, revision, time.Duration(secs)*time.Second)
 	go b.run(ctx, &http.Client{Timeout: 30 * time.Second}, token, time.Duration(secs)*time.Second)
-	log.Print("experimental event bridge started; account integration requires end-to-end verification")
 	<-ctx.Done()
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -46,6 +46,18 @@ Delivery uses bounded retries, not a guarantee of eventual delivery. Transient f
 
 </details>
 
+## What should the service logs show?
+
+Every scan logs `GitHub inbox poll started`, then `poll complete` or `poll failed`. Even an empty or unchanged inbox produces a completion line. The timer waits the logged `next_poll_in` **after** the scan finishes; this is not a wall-clock cron job. The default is five minutes, extended by GitHub polling/rate-limit headers or failure backoff.
+
+Successful scans report `observed`, `changed`, `unchanged`, `baseline`, `enqueued` and `duration`. `baseline` counts initial records saved without emitting history; `changed` counts new/changed records after that baseline. `enqueued` counts delivery entries, so multiple subscriptions can make it larger than `changed`, while no active subscriptions makes it zero. Counts are reported only after the snapshot saves successfully. Failed scans report the failing stage, available HTTP status (`0` when unavailable), rate-limit flag, consecutive failures, duration and next delay; they never claim committed changes.
+
+Each attempted webhook delivery reports `outcome=success|retry|failed|discarded`, HTTP status (`0` when no response was received, including local rejection), attempt number, duration, retry delay, `state_saved`, and remaining pending/dead counts. `discarded` means its queue entry disappeared while the request was in flight, for example after unsubscribe. A successful HTTP receipt does not establish a chat response. If `state_saved=false`, a delivery can repeat even after HTTP success. Idle delivery ticks do not log every second.
+
+Startup logs include `version`, `revision` and the configured interval. Local builds default to `dev` and use Go VCS metadata where available; builds without revision metadata honestly show `unknown`. Docker builds can set `--build-arg VERSION=… --build-arg REVISION=…`; use the source commit for the latter.
+
+Operational lifecycle logs contain counters and outcomes, not account identities, notification text, repository names, event IDs, callback URLs, response bodies or credentials. The separate rejected-subscription diagnostic described in the README logs only the requested hostname.
+
 ## What do I back up?
 
 Keep the entire `/data` volume, especially:

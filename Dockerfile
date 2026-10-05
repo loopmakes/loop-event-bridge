@@ -1,9 +1,13 @@
-FROM golang:1.27.1-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download
 COPY *.go ./
-RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /out/loop-event-bridge . && mkdir -p /out/data && chown 65532:65532 /out/data
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+ARG REVISION=unknown
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -buildvcs=false -trimpath -ldflags="-s -w -X main.buildVersion=${VERSION} -X main.buildRevision=${REVISION}" -o /out/loop-event-bridge . && mkdir -p /out/data && chown 65532:65532 /out/data
 
 FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt

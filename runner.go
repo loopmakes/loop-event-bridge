@@ -11,13 +11,25 @@ import (
 
 const maxQueue = 10000
 
+type pollStats struct {
+	Observed, Changed, Unchanged, Baseline, Enqueued int
+}
+
 func (b *Bridge) applyObservations(observations []Observation, accountID string) error {
+	_, err := b.applyObservationsCounted(observations, accountID)
+	return err
+}
+
+// Counts describe only a successfully persisted snapshot. Baseline records are
+// deliberately separate from changes because initial history emits no events.
+func (b *Bridge) applyObservationsCounted(observations []Observation, accountID string) (pollStats, error) {
+	stats := pollStats{Observed: len(observations)}
 	b.store.mu.Lock()
 	defer b.store.mu.Unlock()
 	next := b.store.copy()
 	b.pruneState(&next, time.Now())
 	if accountID == "" {
-		return errors.New("GitHub account identity missing")
+		return pollStats{}, errors.New("GitHub account identity missing")
 	}
 	key := "notifications/" + accountID
 	baseline := next.Baselines[key]
@@ -25,26 +37,33 @@ func (b *Bridge) applyObservations(observations []Observation, accountID string)
 	for _, o := range observations {
 		seenKey := key + "/" + o.Key
 		if next.Seen[seenKey] == o.Fingerprint {
+			stats.Unchanged++
 			continue
 		}
 		next.Seen[seenKey] = o.Fingerprint
 		if !baseline {
+			stats.Baseline++
 			continue
 		}
+		stats.Changed++
 		e := Event{ID: "evt_" + randomID(), Name: "github.notification.changed", Timestamp: o.Timestamp, Data: o.Data}
 		for id, s := range next.Subscriptions {
 			if s.Name == e.Name && (b.authorizedOwner == nil || b.authorizedOwner(s.Owner)) && s.Expires.After(now) {
 				if len(next.Queue) >= maxQueue {
-					return errors.New("queue capacity reached; snapshot not advanced")
+					return pollStats{}, errors.New("queue capacity reached; snapshot not advanced")
 				}
 				next.Queue = append(next.Queue, Pending{SubscriptionID: id, Event: e, Next: now})
+				stats.Enqueued++
 			}
 		}
 	}
 	next.Baselines[key] = true
 	next.LastPoll = now
 	next.LastError = ""
-	return b.store.save(next)
+	if err := b.store.save(next); err != nil {
+		return pollStats{}, err
+	}
+	return stats, nil
 }
 func (b *Bridge) enqueueTest() error {
 	b.store.mu.Lock()
@@ -64,7 +83,11 @@ func (b *Bridge) enqueueTest() error {
 	if n == 0 {
 		return errors.New("no active bridge.test subscription")
 	}
-	return b.store.save(next)
+	if err := b.store.save(next); err != nil {
+		return err
+	}
+	log.Printf("bridge test queued enqueued=%d", n)
+	return nil
 }
 func (b *Bridge) recordError(message string) {
 	log.Print(message)
@@ -99,16 +122,20 @@ func (b *Bridge) deliverOne(ctx context.Context) {
 	if !found {
 		return
 	}
+	started := time.Now()
 	body, _ := json.Marshal(item.Event)
 	status, _, _ := postSigned(ctx, b.callbacks, s, item.Event.ID, body)
 	b.store.mu.Lock()
 	defer b.store.mu.Unlock()
 	next := b.store.copy()
+	outcome := "discarded"
+	retryAfter := time.Duration(0)
 	for i, p := range next.Queue {
 		if p.SubscriptionID != item.SubscriptionID || p.Event.ID != item.Event.ID {
 			continue
 		}
 		if status >= 200 && status < 300 {
+			outcome = "success"
 			next.Queue = append(next.Queue[:i], next.Queue[i+1:]...)
 		} else {
 			p.Attempts++
@@ -117,14 +144,27 @@ func (b *Bridge) deliverOne(ctx context.Context) {
 			}
 			p.Dead = status == 410 || status == 413 || (status >= 400 && status < 500 && status != 408 && status != 429) || p.Attempts >= 8
 			p.Next = time.Now().Add(time.Duration(1<<min(p.Attempts, 10)) * time.Second)
+			outcome = "retry"
+			retryAfter = time.Until(p.Next)
+			if p.Dead {
+				outcome = "failed"
+				retryAfter = 0
+			}
 			next.Queue[i] = p
 			next.LastError = "webhook delivery failed; inspect bridge_status and local state counts"
 		}
 		break
 	}
-	if e := b.store.save(next); e != nil {
+	persisted := b.store.save(next) == nil
+	if !persisted {
 		log.Print("delivery state persistence failed; delivery may repeat")
 	}
+	httpStatus := status
+	if len(body) > 262144 {
+		httpStatus = 0
+	} // local size rejection, no HTTP request
+	pending, dead := queueCounts(b.store.state.Queue)
+	log.Printf("webhook delivery outcome=%s http_status=%d attempt=%d duration=%s retry_in=%s state_saved=%t pending=%d dead=%d", outcome, httpStatus, item.Attempts+1, time.Since(started).Round(time.Millisecond), retryAfter.Round(time.Millisecond), persisted, pending, dead)
 }
 func (b *Bridge) run(ctx context.Context, github *http.Client, token string, interval time.Duration) {
 	go b.pollLoop(ctx, github, token, interval)
@@ -152,27 +192,57 @@ func (b *Bridge) pollLoop(ctx context.Context, github *http.Client, token string
 		case <-ctx.Done():
 			return
 		case <-poll.C:
-			pollCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-			observations, accountID, minPoll, err := FetchNotifications(pollCtx, github, "https://api.github.com", token, b.account)
-			cancel()
-			delay := nextPollDelay(interval, minPoll, 0)
-			if err == nil {
-				err = b.applyObservations(observations, accountID)
-			}
-			if err != nil {
-				failures++
-				delay = nextPollDelay(interval, minPoll, failures)
-				var ge *GitHubHTTPError
-				if errors.As(err, &ge) && ge.RetryAfter > delay {
-					delay = ge.RetryAfter
-				}
-				b.recordError("GitHub inbox polling: " + err.Error())
-			} else {
-				failures = 0
-			}
+			delay, nextFailures := b.pollOnce(ctx, github, token, interval, failures)
+			failures = nextFailures
 			poll.Reset(delay)
 		}
 	}
+}
+
+// pollOnce emits a bounded, content-free lifecycle even for an empty or unchanged inbox.
+func (b *Bridge) pollOnce(ctx context.Context, github *http.Client, token string, interval time.Duration, failures int) (time.Duration, int) {
+	started := time.Now()
+	log.Print("GitHub inbox poll started")
+	pollCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	observations, accountID, minPoll, err := FetchNotifications(pollCtx, github, "https://api.github.com", token, b.account)
+	cancel()
+	stage := "fetch"
+	stats := pollStats{}
+	if err == nil {
+		stage = "persist"
+		stats, err = b.applyObservationsCounted(observations, accountID)
+	}
+	delay := nextPollDelay(interval, minPoll, 0)
+	if err != nil {
+		failures++
+		delay = nextPollDelay(interval, minPoll, failures)
+		status := 0
+		rateLimited := false
+		var ge *GitHubHTTPError
+		if errors.As(err, &ge) {
+			status, rateLimited = ge.StatusCode, ge.RateLimited
+			delay = max(delay, ge.RetryAfter)
+		}
+		// Filesystem/transport errors can contain paths, URLs or credentials. Never
+		// print err here; the stage, status and counters are enough for triage.
+		b.recordError("GitHub inbox polling failed during " + stage + "; inspect configuration and service health")
+		log.Printf("GitHub inbox poll failed stage=%s http_status=%d rate_limited=%t failures=%d duration=%s next_poll_in=%s", stage, status, rateLimited, failures, time.Since(started).Round(time.Millisecond), delay)
+	} else {
+		failures = 0
+		log.Printf("GitHub inbox poll complete observed=%d changed=%d unchanged=%d baseline=%d enqueued=%d duration=%s next_poll_in=%s", stats.Observed, stats.Changed, stats.Unchanged, stats.Baseline, stats.Enqueued, time.Since(started).Round(time.Millisecond), delay)
+	}
+	return delay, failures
+}
+
+func queueCounts(queue []Pending) (pending, dead int) {
+	for _, p := range queue {
+		if p.Dead {
+			dead++
+		} else {
+			pending++
+		}
+	}
+	return
 }
 
 // Retain at most 100 terminal failures for seven days. Expired/revoked
