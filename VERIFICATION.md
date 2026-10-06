@@ -28,3 +28,29 @@ An additional source review identified and corrected expiry cleanup, acknowledge
 - Independent security audit: not performed
 
 A locally passing suite is not evidence that a particular ChatGPT account exposes custom event subscription controls. Follow the README's harmless `bridge.test` flow before relying on live monitoring.
+
+## Optional-source expansion: local verification (2026-10-06)
+
+Base: `b66f74f987f17f4d1d5ff9106626117eb3f6d5f9`. This section records the pre-publication local validation snapshot. Subsequent publication/CI results are recorded in GitHub Actions. All provider/authentication fixtures are synthetic; no live GitLab or Proton account was accessed.
+
+Passed with official Go 1.27.1 on Linux:
+
+- `go test -count=1 ./...`
+- `go test -race -count=1 ./...`
+- `go vet ./...`
+- `CGO_ENABLED=0 go build -trimpath ...` (static Linux amd64 executable)
+- `go mod verify`, `gofmt`, and `git diff --check`
+- Final standalone-binary startup/health/shutdown with optional sources disabled and invalid credential paths; repeated with optional sources enabled but misconfigured to verify isolated failures
+- Environment-file shell syntax, YAML structural checks (including optional/bootstrap secret examples), and local documentation links
+
+There are 64 new top-level source test groups, including account/source separation, legacy state preservation, outbox/cursor rollback, baseline/restart/reconciliation, incoming-mail filtering, credential precedence, once-only bootstrap, revoked-auth latching, session encryption/locking, storage-path aliases, and nonblocking FIFO rejection.
+
+`govulncheck v1.8.0` reported no reachable-symbol or imported-package vulnerabilities. It identified unused-module advisory [GO-2026-5932](https://pkg.go.dev/vuln/GO-2026-5932) for deprecated `golang.org/x/crypto/openpgp`; this service does not import that package, and no fixed upstream version is listed. A scan is not a security audit.
+
+Not completed in this environment:
+
+- Native browser regression: attempted with installed Chromium 154, but startup fails before assertions because its local socket is forbidden (`Operation not permitted`), including the approved execution retry. The Playwright download also returned invalid/truncated archives. Existing browser CI is retained; `LOOP_CHROMIUM_EXECUTABLE` optionally selects an installed Chromium for local testing
+- Docker/Swarm/container validation: Docker CLI unavailable; YAML parsing is not equivalent to `docker stack config` or a container smoke test
+- Real GitLab/Proton login, Proton free-account access/application-version acceptance, real mail events, and Swarm/Traefik/ChatGPT end-to-end acceptance
+
+At this validation stage, no branch, PR, image, release, or deployment had been published. Prior unpublished work outside this isolated checkout was not included.

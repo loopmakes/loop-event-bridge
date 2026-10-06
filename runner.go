@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -60,6 +61,10 @@ func (b *Bridge) applyObservationsCounted(observations []Observation, accountID 
 	next.Baselines[key] = true
 	next.LastPoll = now
 	next.LastError = ""
+	if next.Sources == nil {
+		next.Sources = map[string]SourceState{}
+	}
+	next.Sources["github"] = SourceState{AccountID: accountID, Baseline: true, LastPoll: now}
 	if err := b.store.save(next); err != nil {
 		return pollStats{}, err
 	}
@@ -95,6 +100,13 @@ func (b *Bridge) recordError(message string) {
 	defer b.store.mu.Unlock()
 	n := b.store.copy()
 	n.LastError = message
+	if n.Sources == nil {
+		n.Sources = map[string]SourceState{}
+	}
+	health := n.Sources["github"]
+	health.LastError = message
+	health.Failures++
+	n.Sources["github"] = health
 	if e := b.store.save(n); e != nil {
 		log.Print("state persistence failed")
 	}
@@ -167,7 +179,22 @@ func (b *Bridge) deliverOne(ctx context.Context) {
 	log.Printf("webhook delivery outcome=%s http_status=%d attempt=%d duration=%s retry_in=%s state_saved=%t pending=%d dead=%d", outcome, httpStatus, item.Attempts+1, time.Since(started).Round(time.Millisecond), retryAfter.Round(time.Millisecond), persisted, pending, dead)
 }
 func (b *Bridge) run(ctx context.Context, github *http.Client, token string, interval time.Duration) {
-	go b.pollLoop(ctx, github, token, interval)
+	var pollers sync.WaitGroup
+	startPoller := func(poll func()) { pollers.Add(1); go func() { defer pollers.Done(); poll() }() }
+	if !b.githubDisabled {
+		startPoller(func() { b.pollLoop(ctx, github, token, interval) })
+	}
+	for _, source := range b.sources {
+		startPoller(func() { b.sourceLoop(ctx, source, interval) })
+	}
+	defer func() {
+		pollers.Wait()
+		for _, source := range b.sources {
+			if closer, ok := source.Adapter.(interface{ Close() }); ok {
+				closer.Close()
+			}
+		}
+	}()
 	delivery := time.NewTicker(time.Second)
 	defer delivery.Stop()
 	maintenance := time.NewTicker(time.Minute)
@@ -250,7 +277,7 @@ func queueCounts(queue []Pending) (pending, dead int) {
 func (b *Bridge) pruneState(s *State, now time.Time) bool {
 	changed := false
 	for id, sub := range s.Subscriptions {
-		if (sub.Name != "bridge.test" && sub.Name != "github.notification.changed") || !sub.Expires.After(now) || (b.authorizedOwner != nil && !b.authorizedOwner(sub.Owner)) {
+		if !knownEvent(sub.Name) || !sub.Expires.After(now) || (b.authorizedOwner != nil && !b.authorizedOwner(sub.Owner)) {
 			delete(s.Subscriptions, id)
 			changed = true
 		}

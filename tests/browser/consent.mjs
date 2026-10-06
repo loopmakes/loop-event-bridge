@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 
 const input = JSON.parse(process.env.LOOP_BROWSER_INPUT);
-const browser = await chromium.launch();
+const browser = await chromium.launch(process.env.LOOP_CHROMIUM_EXECUTABLE ? { executablePath: process.env.LOOP_CHROMIUM_EXECUTABLE } : {});
 try {
   // Only ephemeral, loopback httptest TLS servers use self-signed test certificates.
   const context = await browser.newContext({ ignoreHTTPSErrors: true });

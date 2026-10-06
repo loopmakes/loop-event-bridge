@@ -22,6 +22,8 @@ npm ci --ignore-scripts --prefix tests/browser
 LOOP_BROWSER_TEST=1 go test -race -run TestEmbeddedOAuthBrowser -v -count=1 .
 ```
 
+To use an already installed Chromium instead of the Playwright-managed browser, set `LOOP_CHROMIUM_EXECUTABLE` to its absolute executable path for the test command. Record that browser version with the result; CI keeps the pinned default.
+
 The server logs the Origin actually received. The old `no-referrer` response policy is reproduced by a test-only wrapper; it must produce `Origin: null` and HTTP 403. The production consent page must send the configured origin and finish the callback. Negative cases cover wrong passwords, expired flows, missing/wrong cookies, and native forms submitted by a foreign document with foreign/null Origins. No test intercepts or overrides browser-generated request headers. Unit tests additionally reject missing Origins.
 
 Self-signed certificate acceptance is confined to the isolated browser test context. Callback CSP sources support ASCII DNS names (use punycode for IDNs) and IPv4, with optional ports; IPv6 callback literals are rejected because CSP host-sources do not support them. These tests do not change production TLS or authenticate to any deployed bridge.
@@ -50,7 +52,7 @@ Use `docker stack config`, not only `docker compose config`: stack deployment us
 
 ## What does CI establish?
 
-CI runs source tests, race detection, vet, a static build, and the opt-in Chromium OAuth regression suite. It validates the stack configuration, builds the container without publishing it, and runs a non-root startup/healthcheck with networking disabled. The offline smoke test has no production GitHub token, so it cannot validate source polling.
+CI runs source tests, race detection, vet, a static build, and the opt-in Chromium OAuth regression suite. It validates the stack configuration, builds the container without publishing it, and runs a non-root startup/healthcheck with networking disabled. The offline smoke test has no production provider credentials, so it cannot validate live GitHub, GitLab, or Proton polling. Optional-source adapter tests use synthetic HTTP/mailbox responses and temporary session keys; they do not establish Proton free-account compatibility.
 
 A green run does not establish real Swarm scheduling, secret mounts, volume initialization, Traefik routing, OAuth linking in your account, or a ChatGPT response to a webhook. Use the exact commit's [CI run](https://github.com/loopmakes/loop-event-bridge/actions/workflows/ci.yml), the [verification record](../VERIFICATION.md), and the README's live acceptance steps together.
 
@@ -61,5 +63,7 @@ A green run does not establish real Swarm scheduling, secret mounts, volume init
 - [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28)
 - [Standard Webhooks](https://github.com/standard-webhooks/standard-webhooks)
 - [GitHub Notifications API](https://docs.github.com/en/rest/activity/notifications)
+- [GitLab To-Do API](https://docs.gitlab.com/api/todos/)
+- [Official Proton Go API library](https://github.com/ProtonMail/go-proton-api)
 
 The server implements the `2026-07-28` request metadata and mirrored HTTP headers. Older MCP clients are not supported. See tests for malformed requests, callback verification, OAuth consent/PKCE, token refresh, revocation, queue handling, and restart behavior.

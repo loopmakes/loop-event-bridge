@@ -4,11 +4,13 @@
 
 `github.notification.changed` includes the account login/ID, notification ID, repository, subject type, title, reason, unread flag, update time, and an API URL. Titles and repository names may be private information: subscribe only from a client and conversation where you want to receive them. Notification text is data, never an instruction to execute.
 
-`bridge.test` contains a fixed connectivity-test message. Neither event takes filters; subscribe with `{}`. Use the client instruction to decide which received notifications warrant a response.
+`gitlab.todo.changed` carries pending To-Do metadata, which can include private project names and text. `proton.mail.received` carries only a message ID and receive time. See [source coverage and payloads](SOURCES.md).
+
+`bridge.test` contains a fixed connectivity-test message. No event takes filters; subscribe with `{}`. Use the client instruction to decide which received notifications warrant a response.
 
 ## What counts as a change?
 
-The poller verifies the token's user against `GITHUB_ACCOUNT`, then reads the account-wide Notifications endpoint with `all=true` and `participating=false`. It compares stable fingerprints of the returned records. New notifications, changed titles/reasons, and changes to read/unread state can produce events. The bridge itself makes no GitHub writes.
+For GitHub, the poller verifies the token's user against `GITHUB_ACCOUNT`, then reads the account-wide Notifications endpoint with `all=true` and `participating=false`. It compares stable fingerprints of the returned records. New notifications, changed titles/reasons, and changes to read/unread state can produce events. The bridge itself makes no GitHub writes.
 
 The first **complete** scan establishes a silent baseline, even for an empty inbox. Saved fingerprints survive restart. Failed or incomplete scans leave the last good baseline in place. There are no repository, author, subject-type, or reason allowlists.
 
@@ -48,9 +50,11 @@ Delivery uses bounded retries, not a guarantee of eventual delivery. Transient f
 
 ## What should the service logs show?
 
-Every scan logs `GitHub inbox poll started`, then `poll complete` or `poll failed`. Even an empty or unchanged inbox produces a completion line. The timer waits the logged `next_poll_in` **after** the scan finishes; this is not a wall-clock cron job. The default is five minutes, extended by GitHub polling/rate-limit headers or failure backoff.
+Every GitHub scan logs `GitHub inbox poll started`, then `poll complete` or `poll failed`. Even an empty or unchanged inbox produces a completion line. The timer waits the logged `next_poll_in` **after** the scan finishes; this is not a wall-clock cron job. The default is five minutes, extended by GitHub polling/rate-limit headers or failure backoff.
 
 Successful scans report `observed`, `changed`, `unchanged`, `baseline`, `enqueued` and `duration`. `baseline` counts initial records saved without emitting history; `changed` counts new/changed records after that baseline. `enqueued` counts delivery entries, so multiple subscriptions can make it larger than `changed`, while no active subscriptions makes it zero. Counts are reported only after the snapshot saves successfully. Failed scans report the failing stage, available HTTP status (`0` when unavailable), rate-limit flag, consecutive failures, duration and next delay; they never claim committed changes.
+
+Optional source scans log `source poll complete` or `source poll failed`, with the source name and safe counters. Use `bridge_status.sources` for each source's configuration and polling status (`needsAction` identifies operator setup or reauthentication problems); raw provider errors and response bodies are not logged. Source failures are isolated, while state persistence and delivery remain shared.
 
 Each attempted webhook delivery reports `outcome=success|retry|failed|discarded`, HTTP status (`0` when no response was received, including local rejection), attempt number, duration, retry delay, `state_saved`, and remaining pending/dead counts. `discarded` means its queue entry disappeared while the request was in flight, for example after unsubscribe. A successful HTTP receipt does not establish a chat response. If `state_saved=false`, a delivery can repeat even after HTTP success. Idle delivery ticks do not log every second.
 
@@ -64,8 +68,9 @@ Keep the entire `/data` volume, especially:
 
 - `state.json`: subscriptions, callback signing secrets, observations, and delivery queue
 - `oauth.json`: OAuth keys, clients, grants, and tokens
+- `proton-session.json`, if Proton is enabled: the encrypted refresh session. Preserve its separate session-encryption secret securely as well; it is not stored in this volume by the supplied stack
 
-Stop the service before a consistent backup. Preserve UID/GID 65532 and private file permissions. Encrypt backups and treat them as credentials. Don't share their contents for debugging. Corrupt or invalid persisted state fails startup rather than silently resetting the baseline.
+Stop the service before a consistent backup. Preserve UID/GID 65532 and private file permissions. Encrypt backups and treat them as credentials. Don't share their contents for debugging. Corrupt or invalid shared bridge state fails startup rather than silently resetting the baseline. An invalid Proton session fails that source; it is not silently replaced by automatic password login.
 
 One process owns this volume. Do not scale the service above one or run a replacement at the same time. The pinned local volume has no multi-node high availability.
 
@@ -77,7 +82,7 @@ To stop one monitor, ask the client to unsubscribe and confirm the subscription 
 docker service scale loop-event-bridge_bridge=0
 ```
 
-Reapplying the supplied stack starts its one replica again. Changing the owner password or OAuth client/domain configuration and restarting invalidates existing grants; reconnect afterward. Revoke a compromised GitHub token through GitHub and supply a replacement Swarm secret yourself.
+Reapplying the supplied stack starts its one replica again. Changing the owner password or OAuth client/domain configuration and restarting invalidates existing grants; reconnect afterward. Revoke a compromised GitHub or GitLab token through its provider and supply a replacement Swarm secret yourself. For Proton session revocation and reauthentication, follow the [operator guide](proton.md). Disabling a source stops its poller; it does not revoke the upstream credential or replace unsubscribing from its events.
 
 Access tokens last 15 minutes; rotating refresh tokens last up to 30 days. The embedded OAuth system is experimental single-owner infrastructure, not an independently audited identity provider. A persistence failure mid-flow can require reconnecting.
 
@@ -87,9 +92,11 @@ Access tokens last 15 minutes; rotating refresh tokens last up to 30 days. The e
 - **Traefik 404/502:** check its provider/version, `deploy.labels`, network name, port 8080, entrypoint, certificate setup, and any Traefik service-selection constraints
 - **OAuth fails:** check HTTPS origin, preserved Host header, exact redirect URI, predefined public client ID, and token endpoint authentication method `none`
 - **Subscription returns `requestedHost`:** verify the real client destination, add that exact hostname to `CALLBACK_HOSTS`, and redeploy. Discovery is deliberately available before callback hosts are allowed
-- **Polling error:** check the token's expiry, classic-token type, `notifications` scope, and account match; look at `bridge_status` without exposing secrets
+- **GitHub polling error:** check the token's expiry, classic-token type, `notifications` scope, and account match; look at `bridge_status` without exposing secrets
+- **GitLab polling error:** check `sources.gitlab`, the token mount/expiry/permissions, the expected account, and the HTTPS instance origin
+- **Proton polling error:** check `sources.proton`, session/key permissions, expected account ID, client version, and whether manual reauthentication is needed; do not remove shared state
 - **Test queued but no chat response:** inspect subscription expiry and delivery health. HTTP receipt alone does not prove the client processed the event
 
 Callback connections require HTTPS on port 443 and an exact allowed hostname. They reject non-public addresses, redirects, and environment proxies, while preserving TLS hostname verification. Don't weaken these checks to get a failing destination working.
 
-Logs and `bridge_status` omit secret values, callback URLs, and notification titles. The local healthcheck only means the process responds; it does not prove GitHub polling or callback delivery is healthy.
+Logs and `bridge_status` omit secret values, callback URLs, and notification titles. The local healthcheck only means the process responds; it does not prove any provider polling or callback delivery is healthy.

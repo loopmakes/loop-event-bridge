@@ -29,7 +29,7 @@ func loadGitHubToken() (string, error) {
 	token := os.Getenv(source)
 	if file := os.Getenv("GITHUB_TOKEN_FILE"); file != "" {
 		source = "GITHUB_TOKEN_FILE"
-		raw, err := os.ReadFile(file)
+		raw, err := readSourceTokenFile(file)
 		if err != nil {
 			return "", errors.New("GITHUB_TOKEN_FILE could not be read")
 		}
@@ -50,6 +50,15 @@ func loadGitHubToken() (string, error) {
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "proton-auth":
+			config := protonEnvironment()
+			if e := protonStoragePathsSafe(config); e != nil {
+				log.Fatal(e)
+			}
+			if e := RunProtonAuth(context.Background(), config, os.Stdin, os.Stdout); e != nil {
+				log.Fatal("Proton authentication failed: ", e)
+			}
+			return
 		case "healthcheck":
 			r, e := http.Get("http://127.0.0.1:8081/healthz")
 			if e != nil {
@@ -74,7 +83,7 @@ func main() {
 			}
 			return
 		default:
-			log.Fatal("usage: loop-event-bridge [healthcheck|emit-test]")
+			log.Fatal("usage: loop-event-bridge [healthcheck|emit-test|proton-auth]")
 		}
 	}
 	resource := strings.TrimSuffix(os.Getenv("PUBLIC_URL"), "/")
@@ -84,8 +93,10 @@ func main() {
 		log.Fatal("OAuth configuration invalid: ", e)
 	}
 	account := strings.TrimSpace(os.Getenv("GITHUB_ACCOUNT"))
-	if account == "" || strings.ContainsAny(account, " /?#") {
-		log.Fatal("GITHUB_ACCOUNT must name the intended authenticated account")
+	githubEnabled := sourceEnabled("GITHUB", true)
+	if githubEnabled && (account == "" || strings.ContainsAny(account, " /?#") || !sourceToggleValid("GITHUB")) {
+		log.Print("GitHub source configuration requires a valid account and enabled flag")
+		account = ""
 	}
 	hosts := map[string]bool{}
 	for _, h := range strings.Split(os.Getenv("CALLBACK_HOSTS"), ",") {
@@ -105,9 +116,14 @@ func main() {
 		log.Fatal("state could not be loaded; refusing fresh baseline")
 	}
 	b := &Bridge{store: st, auth: oauth.Authenticate, authorizedOwner: oauth.AuthorizedOwner, callbacks: callbackClient(), hosts: hosts, account: account, resource: resource, issuer: issuer, verified: map[string]time.Time{}}
-	token, e := loadGitHubToken()
-	if e != nil {
-		log.Fatal(e)
+	b.githubDisabled = !githubEnabled
+	b.sources = configuredSources()
+	var token string
+	if githubEnabled {
+		token, e = loadGitHubToken()
+		if e != nil {
+			log.Print("GitHub token configuration unavailable")
+		}
 	}
 	secs, e := strconv.Atoi(env("POLL_INTERVAL_SECONDS", "300"))
 	if e != nil || secs < 60 || secs > 86400 {
@@ -140,11 +156,20 @@ func main() {
 	}
 	version, revision := buildIdentity()
 	log.Printf("experimental event bridge started version=%s revision=%s poll_interval=%s; account integration requires end-to-end verification", version, revision, time.Duration(secs)*time.Second)
-	go b.run(ctx, &http.Client{Timeout: 30 * time.Second}, token, time.Duration(secs)*time.Second)
+	runnerDone := make(chan struct{})
+	go func() {
+		defer close(runnerDone)
+		b.run(ctx, &http.Client{Timeout: 30 * time.Second}, token, time.Duration(secs)*time.Second)
+	}()
 	<-ctx.Done()
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	for _, s := range servers {
 		_ = s.Shutdown(shutdown)
+	}
+	select {
+	case <-runnerDone:
+	case <-shutdown.Done():
+		log.Print("source shutdown timeout")
 	}
 }

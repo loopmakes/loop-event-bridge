@@ -32,7 +32,7 @@ docker network inspect "$TRAEFIK_NETWORK" --format '{{.Driver}} {{.Scope}}'
 
 Expect `overlay swarm`. Traefik and the bridge must both join this exact network. In Traefik v3, enable the **Swarm provider**, not the standalone Docker provider. Match your existing HTTPS entrypoint and certificate resolver. If Traefik selects services with extra constraint labels, add its required label under `deploy.labels`.
 
-The template assumes an existing certificate resolver. If you use certificates from Traefik's file provider instead, remove only the `tls.certresolver` label and keep `tls=true`. Preserve the public Host header. Allow outbound HTTPS from the bridge to `api.github.com` and your verified client callback hosts.
+The template assumes an existing certificate resolver. If you use certificates from Traefik's file provider instead, remove only the `tls.certresolver` label and keep `tls=true`. Preserve the public Host header. Allow outbound HTTPS from the bridge to `api.github.com` when GitHub is enabled and to your verified client callback hosts. Optional sources also need their configured GitLab origin or `mail.proton.me` for the Proton API; see [source setup](SOURCES.md).
 
 The service labels use `traefik.swarm.network` and explicitly route to port 8080. [Traefik Swarm provider](https://doc.traefik.io/traefik/providers/swarm/) · [Swarm routing labels](https://doc.traefik.io/traefik/reference/routing-configuration/other-providers/swarm/)
 
@@ -57,9 +57,11 @@ docker volume create loop-event-bridge-data
 
 The image supplies `/data` owned by UID/GID 65532 when Docker initializes a fresh empty volume. An existing/restored volume must retain that ownership and let this UID write. Don't use a root-owned bind directory instead without preparing its permissions.
 
-Keep the label on one node, one replica, and the same volume. If the node is unavailable, leaving this service pending is safer than silently starting with empty state elsewhere. For migration, stop the old task and restore both state files on the replacement node before moving the label. Never run two copies against one volume. [Docker service volumes and constraints](https://docs.docker.com/reference/cli/docker/service/create/)
+Keep the label on one node, one replica, and the same volume. If the node is unavailable, leaving this service pending is safer than silently starting with empty state elsewhere. For migration, stop the old task and restore the state files (and the encrypted Proton session if used) on the replacement node before moving the label. Never run two copies against one volume. [Docker service volumes and constraints](https://docs.docker.com/reference/cli/docker/service/create/)
 
-### 4. Supply your two secrets manually
+### 4. Supply your default secrets manually
+
+The unchanged stack enables GitHub only. [Optional GitLab and Proton setup](SOURCES.md) explains their additional secrets, Proton session bootstrap, and how to disable GitHub without a dummy token.
 
 In your own secure workflow, obtain:
 
@@ -74,6 +76,12 @@ docker secret create "$GITHUB_TOKEN_SECRET" /secure/path/github-token
 ```
 
 Keep source files outside the repository, readable only by you; manage their removal through your normal secret-handling process. Never paste secret values into commands, `.env`, issues, logs, or chat. The stack references existing secret **names**, mounts them only in this service, and makes the files readable by UID 65532 with mode `0400`. [Docker Swarm secrets](https://docs.docker.com/engine/swarm/secrets/)
+
+### 5. Add optional sources only when needed
+
+The same image contains all adapters. `.env.example` leaves `GITLAB_ENABLED=false` and `PROTON_ENABLED=false`. The optional service mounts and top-level secret definitions in `stack.yaml` are comments; enabling a flag does not mount a secret automatically.
+
+Follow [Sources](SOURCES.md) to enable the appropriate pair of secret blocks. GitLab needs its user token. Proton needs a separate raw 32-byte session-encryption key and an encrypted refresh session on the writable `/data` volume. On first use, username/password secrets can bootstrap that session in the persistent service. After success, remove the bootstrap variables and mounts and redeploy; keep the session key. Interactive `proton-auth` is an optional fallback for supported challenges, not a required setup step. Do not store provider credentials in `.env` or image layers. No sidecar or new Traefik router is needed.
 
 ## Build and deploy
 

@@ -16,6 +16,8 @@ import (
 )
 
 type Bridge struct {
+	githubDisabled            bool
+	sources                   []sourceConfig
 	authorizedOwner           func(string) bool
 	store                     *Store
 	auth                      func(*http.Request) (string, error)
@@ -129,17 +131,34 @@ func objectSchema(props map[string]any, required []string) map[string]any {
 func (b *Bridge) eventDefinitions() []any {
 	str := map[string]any{"type": "string"}
 	input := objectSchema(map[string]any{}, []string{})
-	return []any{
+	definitions := []any{
 		map[string]any{"name": "bridge.test", "description": "Operator-triggered connectivity test; no GitHub changes.", "delivery": []string{"webhook"}, "inputSchema": input, "payloadSchema": objectSchema(map[string]any{"message": str}, []string{"message"})},
 		map[string]any{"name": "github.notification.changed", "description": "A new or updated notification in the configured GitHub account's complete Notifications inbox. Covers all repositories, subject types and reasons without marking anything read. This is the account's subscribed/participating inbox, not every GitHub event. Snapshot polling may coalesce changes; no historical replay.", "delivery": []string{"webhook"}, "inputSchema": input, "payloadSchema": map[string]any{"type": "object", "properties": map[string]any{"account_login": str, "account_id": str, "notification_id": str, "repository": str, "subject_type": str, "title": str, "reason": str, "unread": map[string]any{"type": "boolean"}, "updated_at": str, "api_url": str}, "required": []string{"account_login", "account_id", "notification_id", "repository", "subject_type", "title", "reason", "unread", "updated_at", "api_url"}, "additionalProperties": true}},
 	}
+	if b.githubDisabled {
+		definitions = definitions[:1]
+	}
+	for _, source := range b.sources {
+		description := "A new or changed pending GitLab To-Do item. Partial account activity only, not a complete inbox; never marks items done. Initial history is baselined quietly."
+		fields := map[string]any{"account_id": str, "todo_id": str}
+		required := []string{"account_id", "todo_id"}
+		if source.Name == "proton" {
+			description = "A newly received incoming Proton Mail message, via the direct event API. Message identifier and receive time only; no bodies or attachments. Initial history is not replayed."
+			fields = map[string]any{"message_id": str, "received_at": str}
+			required = []string{"message_id", "received_at"}
+		}
+		definitions = append(definitions, map[string]any{"name": source.EventName, "description": description, "delivery": []string{"webhook"}, "inputSchema": input, "payloadSchema": map[string]any{"type": "object", "properties": fields, "required": required, "additionalProperties": true}})
+	}
+	return definitions
+
 }
 
 func (b *Bridge) call(ctx context.Context, owner, method string, raw json.RawMessage) (any, *rpcError) {
 	bad := func(msg string) (any, *rpcError) { return nil, &rpcError{-32602, msg, nil} }
 	switch method {
 	case "server/discover":
-		return map[string]any{"supportedVersions": []string{"2026-07-28"}, "capabilities": map[string]any{"events": map[string]any{}, "tools": map[string]any{}}, "_meta": map[string]any{"io.modelcontextprotocol/serverInfo": map[string]string{"name": "loop-event-bridge", "version": "0.1.0"}}}, nil
+		version, _ := buildIdentity()
+		return map[string]any{"supportedVersions": []string{"2026-07-28"}, "capabilities": map[string]any{"events": map[string]any{}, "tools": map[string]any{}}, "_meta": map[string]any{"io.modelcontextprotocol/serverInfo": map[string]string{"name": "loop-event-bridge", "version": version}}}, nil
 	case "events/list":
 		return map[string]any{"events": b.eventDefinitions()}, nil
 	case "tools/list":
@@ -160,7 +179,7 @@ func (b *Bridge) call(ctx context.Context, owner, method string, raw json.RawMes
 				dead++
 			}
 		}
-		status := map[string]any{"deadLetters": dead, "subscriptions": len(b.store.state.Subscriptions), "queued": len(b.store.state.Queue), "lastPoll": b.store.state.LastPoll, "lastError": b.store.state.LastError, "experimental": true, "githubAccount": b.account}
+		status := map[string]any{"deadLetters": dead, "subscriptions": len(b.store.state.Subscriptions), "queued": len(b.store.state.Queue), "lastPoll": b.store.state.LastPoll, "lastError": b.store.state.LastError, "experimental": true, "githubAccount": b.account, "sources": b.sourceStatusesLocked()}
 		b.store.mu.Unlock()
 		data, _ := json.Marshal(status)
 		return map[string]any{"content": []any{map[string]any{"type": "text", "text": string(data)}}, "isError": false}, nil
@@ -169,7 +188,7 @@ func (b *Bridge) call(ctx context.Context, owner, method string, raw json.RawMes
 		if decode(raw, &p) != nil {
 			return bad("invalid subscription parameters")
 		}
-		if (p.Name != "bridge.test" && p.Name != "github.notification.changed") || p.Delivery.Mode != "webhook" {
+		if (!b.eventEnabled(p.Name) && method != "events/unsubscribe") || !knownEvent(p.Name) || p.Delivery.Mode != "webhook" {
 			return bad("event is not supported or delivery mode is invalid")
 		}
 		if validCallback(p.Delivery.URL, b.hosts) != nil {

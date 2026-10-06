@@ -53,6 +53,7 @@ type State struct {
 	Queue         []Pending
 	LastPoll      time.Time
 	LastError     string
+	Sources       map[string]SourceState `json:",omitempty"`
 }
 type Store struct {
 	mu    sync.Mutex

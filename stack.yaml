@@ -18,8 +18,24 @@ services:
       OAUTH_CLIENT_ID: ${OAUTH_CLIENT_ID:?Set the predefined public client ID}
       OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI:?Copy the exact ChatGPT redirect URI}
       OWNER_PASSWORD_FILE: /run/secrets/owner_password
+      GITHUB_ENABLED: ${GITHUB_ENABLED:-true}
       GITHUB_TOKEN_FILE: /run/secrets/github_token
-      GITHUB_ACCOUNT: ${GITHUB_ACCOUNT:?Set your expected GitHub login}
+      GITHUB_ACCOUNT: ${GITHUB_ACCOUNT:-}
+      # Optional sources need the secret blocks below; flags alone are not enough.
+      # See docs/SOURCES.md. No optional secret is required by the default stack.
+      GITLAB_ENABLED: ${GITLAB_ENABLED:-false}
+      GITLAB_ACCOUNT: ${GITLAB_ACCOUNT:-}
+      GITLAB_URL: ${GITLAB_URL:-https://gitlab.com}
+      GITLAB_TOKEN_FILE: /run/secrets/gitlab_token
+      PROTON_ENABLED: ${PROTON_ENABLED:-false}
+      PROTON_ACCOUNT_ID: ${PROTON_ACCOUNT_ID:-}
+      PROTON_SESSION_FILE: ${PROTON_SESSION_FILE:-/data/proton-session.json}
+      PROTON_SESSION_KEY_FILE: /run/secrets/proton_session_key
+      PROTON_APP_VERSION: ${PROTON_APP_VERSION:-}
+      # First-login bootstrap only: uncomment with BOTH matching secret blocks.
+      # After a session is saved, remove these variables/mounts and redeploy.
+      # PROTON_USERNAME_FILE: /run/secrets/proton_username
+      # PROTON_PASSWORD_FILE: /run/secrets/proton_password
       OAUTH_STATE_FILE: /data/oauth.json
       STATE_FILE: /data/state.json
       CALLBACK_HOSTS: ${CALLBACK_HOSTS:-}
@@ -35,6 +51,29 @@ services:
         uid: "65532"
         gid: "65532"
         mode: 0400
+      # GitLab: uncomment this mount AND its top-level secret below.
+      # - source: gitlab_token
+      #   target: gitlab_token
+      #   uid: "65532"
+      #   gid: "65532"
+      #   mode: 0400
+      # Proton: uncomment this mount AND its top-level secret below.
+      # - source: proton_session_key
+      #   target: proton_session_key
+      #   uid: "65532"
+      #   gid: "65532"
+      #   mode: 0400
+      # Optional Proton first-login bootstrap credentials.
+      # - source: proton_username
+      #   target: proton_username
+      #   uid: "65532"
+      #   gid: "65532"
+      #   mode: 0400
+      # - source: proton_password
+      #   target: proton_password
+      #   uid: "65532"
+      #   gid: "65532"
+      #   mode: 0400
     volumes:
       - bridge-data:/data
     networks:
@@ -78,6 +117,18 @@ secrets:
   github_token:
     external: true
     name: ${GITHUB_TOKEN_SECRET:?Set your existing Swarm GitHub-token secret name}
+  # gitlab_token:
+  #   external: true
+  #   name: ${GITLAB_TOKEN_SECRET:-loop-event-bridge-gitlab-v1}
+  # proton_session_key:
+  #   external: true
+  #   name: ${PROTON_SESSION_KEY_SECRET:-loop-event-bridge-proton-key-v1}
+  # proton_username:
+  #   external: true
+  #   name: ${PROTON_USERNAME_SECRET:-loop-event-bridge-proton-username-v1}
+  # proton_password:
+  #   external: true
+  #   name: ${PROTON_PASSWORD_SECRET:-loop-event-bridge-proton-password-v1}
 
 volumes:
   bridge-data:
