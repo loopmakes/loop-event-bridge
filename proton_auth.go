@@ -25,6 +25,18 @@ func RunProtonAuth(ctx context.Context, c ProtonConfig, in *os.File, out io.Writ
 	if in == nil || !term.IsTerminal(int(in.Fd())) {
 		return errors.New("proton-auth requires an interactive terminal; passwords cannot be piped")
 	}
+	manager, _ := newProtonManager(c.AppVersion, nil)
+	defer manager.Close()
+	return runProtonInteractiveAuth(ctx, c, out, func(prompt string) ([]byte, error) {
+		return protonTerminalSecret(in, out, prompt)
+	}, manager)
+}
+
+type protonAuthPrompt func(string) ([]byte, error)
+
+// Keeping the SDK boundary injectable lets synthetic tests verify failure and
+// cancellation without a terminal, live credentials, or changes to SDK proofs.
+func runProtonInteractiveAuth(ctx context.Context, c ProtonConfig, out io.Writer, prompt protonAuthPrompt, manager protonInteractiveManager) error {
 	session, err := openProtonSessionStore(c.SessionFile, c.SessionKeyFile)
 	if err != nil {
 		return err
@@ -44,24 +56,20 @@ func RunProtonAuth(ctx context.Context, c ProtonConfig, in *os.File, out io.Writ
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return errors.New("Proton session target unavailable")
 	}
-	username, err := protonTerminalSecret(in, out, "Proton username (hidden): ")
+	username, err := readProtonAuthInput(ctx, prompt, "Proton username (hidden): ")
 	if err != nil {
 		return err
 	}
 	defer clear(username)
-	password, err := protonTerminalSecret(in, out, "Proton password (hidden): ")
+	password, err := readProtonAuthInput(ctx, prompt, "Proton password (hidden): ")
 	if err != nil {
 		return err
 	}
 	defer clear(password)
-	manager, _ := newProtonManager(c.AppVersion, nil)
-	defer manager.Close()
-	requestCtx, cancel := context.WithTimeout(protonAuthContext(ctx), time.Minute)
-	client, auth, err := manager.NewClientWithLogin(requestCtx, strings.TrimSpace(string(username)), password)
-	cancel()
+	client, auth, err := protonInteractiveLogin(ctx, manager, strings.TrimSpace(string(username)), password, prompt, out)
 	clear(password)
 	if err != nil {
-		return protonLoginError(requestCtx, protonStageLogin, err)
+		return err
 	}
 	defer client.Close()
 	var authMu sync.Mutex
@@ -87,11 +95,11 @@ func RunProtonAuth(ctx context.Context, c ProtonConfig, in *os.File, out io.Writ
 	switch auth.TwoFA.Enabled {
 	case 0:
 	case proton.HasTOTP, proton.HasFIDO2AndTOTP:
-		code, err := protonTerminalSecret(in, out, "Proton TOTP code (hidden): ")
+		code, err := readProtonAuthInput(ctx, prompt, "Proton TOTP code (hidden): ")
 		if err != nil {
 			return err
 		}
-		requestCtx, cancel = context.WithTimeout(protonAuthContext(ctx), time.Minute)
+		requestCtx, cancel := context.WithTimeout(protonAuthContext(ctx), time.Minute)
 		err = client.Auth2FA(requestCtx, proton.Auth2FAReq{TwoFactorCode: string(code)})
 		cancel()
 		clear(code)
@@ -101,7 +109,7 @@ func RunProtonAuth(ctx context.Context, c ProtonConfig, in *os.File, out io.Writ
 	default:
 		return errors.New("this Proton account requires an authentication method this CLI does not support; FIDO2-only login is unavailable")
 	}
-	requestCtx, cancel = context.WithTimeout(protonAuthContext(ctx), time.Minute)
+	requestCtx, cancel := context.WithTimeout(protonAuthContext(ctx), time.Minute)
 	user, err := client.GetUser(requestCtx)
 	cancel()
 	if err != nil {
@@ -121,6 +129,9 @@ func RunProtonAuth(ctx context.Context, c ProtonConfig, in *os.File, out io.Writ
 	}
 	saved.AccountID = user.ID
 	saved.LoginHash = protonUsernameHash(string(username))
+	if ctx.Err() != nil {
+		return errors.New("Proton interactive authentication cancelled; session not saved")
+	}
 	if err = session.save(saved); err != nil {
 		return err
 	}
@@ -130,6 +141,18 @@ func RunProtonAuth(ctx context.Context, c ProtonConfig, in *os.File, out io.Writ
 		return errors.New("Proton session saved but terminal output failed")
 	}
 	return nil
+}
+
+func readProtonAuthInput(ctx context.Context, prompt protonAuthPrompt, label string) ([]byte, error) {
+	if ctx.Err() != nil {
+		return nil, errors.New("Proton interactive authentication cancelled")
+	}
+	value, err := prompt(label)
+	if ctx.Err() != nil || err != nil || len(value) == 0 || len(value) > 4096 {
+		clear(value)
+		return nil, errors.New("Proton interactive authentication cancelled or input unavailable")
+	}
+	return value, nil
 }
 func protonTerminalSecret(in *os.File, out io.Writer, prompt string) ([]byte, error) {
 	if _, err := fmt.Fprint(out, prompt); err != nil {

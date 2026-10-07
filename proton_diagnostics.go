@@ -38,6 +38,7 @@ const (
 	protonStageUser
 	protonStageRefresh
 	protonStageModulus
+	protonStageVerificationEmail
 )
 
 func (s protonAuthStage) String() string {
@@ -56,6 +57,8 @@ func (s protonAuthStage) String() string {
 		return "refresh"
 	case protonStageModulus:
 		return "modulus"
+	case protonStageVerificationEmail:
+		return "verification-email"
 	default:
 		return "unknown"
 	}
@@ -75,6 +78,8 @@ func protonRequestStage(request *http.Request) protonAuthStage {
 		return protonStageRefresh
 	case "GET /api/auth/v4/modulus":
 		return protonStageModulus
+	case "POST /api/core/v4/users/code":
+		return protonStageVerificationEmail
 	default:
 		return protonStageUnknown
 	}
@@ -117,13 +122,14 @@ type protonAuthError struct {
 	stage      protonAuthStage
 	httpStatus int
 	apiCode    proton.Code
+	methods    protonHVMethods
 }
 
 func (e *protonAuthError) Error() string {
 	message := "Proton authentication failed; check account access and credentials, then retry manually"
 	switch e.apiCode {
 	case proton.HumanVerificationRequired:
-		message = "Proton requires human verification, which may include email verification; this integration cannot complete that challenge"
+		message = "Proton requires human verification; proton-auth supports email when offered"
 	case proton.PaidPlanRequired:
 		message = "Proton rejected this account's API access; no paid-account workaround is enabled"
 	case protonAppVersionInvalidCode, protonAppVersionFormatCode:
@@ -131,7 +137,11 @@ func (e *protonAuthError) Error() string {
 	case proton.AppVersionBadCode, proton.AppVersionMissingCode:
 		message = "Proton rejected the application-version configuration; see docs/proton.md for integration identity requirements"
 	}
-	return fmt.Sprintf("%s (stage=%s http_status=%d api_code=%d)", message, e.stage, e.httpStatus, e.apiCode)
+	fields := fmt.Sprintf("stage=%s http_status=%d api_code=%d", e.stage, e.httpStatus, e.apiCode)
+	if e.apiCode == proton.HumanVerificationRequired {
+		fields += " offered_methods=" + e.methods.String()
+	}
+	return fmt.Sprintf("%s (%s)", message, fields)
 }
 
 func protonLoginError(ctx context.Context, stage protonAuthStage, err error) *protonAuthError {
@@ -152,6 +162,7 @@ func protonLoginError(ctx context.Context, stage protonAuthStage, err error) *pr
 		if apiErr.Code > 0 {
 			diagnostic.apiCode = apiErr.Code
 		}
+		diagnostic.methods = protonOfferedHVMethods(apiErr)
 	}
 	return diagnostic
 }

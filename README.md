@@ -14,7 +14,7 @@ GitHub is enabled by default; GitLab and Proton are off until configured. The br
 
 **Experimental:** automated tests cover code paths and offline container startup, not live provider compatibility. No live GitLab or Proton account has been tested; free Proton account compatibility is unverified. A real Swarm + Traefik + ChatGPT connection still needs testing. A successful `bridge.test` response in your chat is the acceptance test, not merely a healthy container or webhook HTTP 200.
 
-**Proton application identity:** explicitly set `PROTON_APP_VERSION=Other`; a copied frontend version is invalid. This compatibility value passed credential-free public-endpoint checks. Full account authentication remains unverified; human/email verification is unsupported. See the [configuration and limits](docs/proton.md#application-identity-and-compatibility-configuration).
+**Proton application identity:** explicitly set `PROTON_APP_VERSION=Other`; a copied frontend version is invalid. This compatibility value passed credential-free public-endpoint checks. Full account authentication remains unverified. Interactive `proton-auth` supports the exact offered `email` verification method; other human-verification methods remain explicit unsupported stops. See the [configuration and limits](docs/proton.md#application-identity-and-compatibility-configuration).
 
 ## What would I use it for?
 

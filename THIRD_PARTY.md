@@ -1,6 +1,6 @@
 # Third-party dependencies
 
-Dependencies are fetched through the Go module system; their source is not vendored in this repository. Exact direct and transitive versions and checksums are recorded in `go.mod` and `go.sum`.
+Dependencies are fetched through the Go module system; their production source is not vendored in this repository. The synthetic SRP test fixture exception is noted below. Exact direct and transitive versions and checksums are recorded in `go.mod` and `go.sum`.
 
 Direct dependencies:
 
@@ -22,3 +22,7 @@ The initial Fosite transitive versions were updated to address Go vulnerability 
 The root module mirrors the official Proton client's `go.mod` replacement of `github.com/go-resty/resty/v2` with [`github.com/ProtonMail/resty/v2 v2.0.0-20250929142426-e3dc6308c80b`](https://github.com/ProtonMail/resty/tree/e3dc6308c80b), [MIT license](https://github.com/ProtonMail/resty/blob/e3dc6308c80b/LICENSE). Dependency-module replace directives do not propagate to consumers; this explicit replacement keeps the reviewed Proton HTTP behavior consistent with upstream. Proton's client requires Go 1.26.1 or newer.
 
 Proton and its transitive cryptographic/email dependencies are linked into the binary even when the source is disabled. Disabling the source prevents credential reads and network/session initialization; it does not remove compiled dependencies or their license obligations. See upstream's [copying/dependency notes](https://github.com/ProtonMail/go-proton-api/blob/390fd389be646b9ac79bc848f57a198e0573c517/COPYING_NOTES.md) and the exact module graph before distributing a binary.
+
+## Synthetic authentication fixture
+
+`testdata/proton-auth-info.json` contains a public synthetic signed modulus and server ephemeral from [ProtonMail/go-srp v0.0.7 srp_test.go](https://github.com/ProtonMail/go-srp/blob/v0.0.7/srp_test.go). The upstream MIT notice is preserved in `testdata/proton-auth-info.LICENSE`. These are test vectors, not account credentials. They exercise the SDK’s human-verification headers without disabling its normal SRP checks or contacting Proton.

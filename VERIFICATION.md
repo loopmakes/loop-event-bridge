@@ -57,8 +57,27 @@ At this validation stage, no branch, PR, image, release, or deployment had been 
 
 ## Proton identity and diagnostic fix (2026-10-07)
 
-Credential-free GET checks with `x-pm-appversion: Other` returned HTTP 200 / API code 1000 at both `https://mail.proton.me/api/auth/v4/modulus` and `https://mail-api.proton.me/auth/v4/modulus` during 04:47–04:48 UTC. No cookies, account credentials, authenticated login, or deployment were used. This establishes public-endpoint compatibility only; see the [operator guide](docs/proton.md#application-identity-and-compatibility-configuration) for the limits and pinned third-party consumer evidence. Human/email verification remains unsupported.
+Credential-free GET checks with `x-pm-appversion: Other` returned HTTP 200 / API code 1000 at both `https://mail.proton.me/api/auth/v4/modulus` and `https://mail-api.proton.me/auth/v4/modulus` during 04:47–04:48 UTC. No cookies, account credentials, authenticated login, or deployment were used. This establishes public-endpoint compatibility only; see the [operator guide](docs/proton.md#application-identity-and-compatibility-configuration) for the limits and pinned third-party consumer evidence. Human/email verification was unsupported in that patch; the subsequent interactive change is recorded below.
 
 The patch adds eleven synthetic regression groups for conservative identity validation, application-version error classification, wrapped SDK errors, allowlisted authentication stages, malformed responses, concurrent trace isolation, per-request status reset, safe status/log persistence, once-only bootstrap, and refresh failure/retry behavior without session replacement.
 
-Local pre-publication checks passed: `git diff --check`, `.env.example` shell syntax, stack YAML parsing, and local documentation paths/anchors. This execution environment has no Go compiler or `gofmt`, so Go tests, race detection, vet, formatting, and builds must be established by the exact published commit's [CI](https://github.com/loopmakes/loop-event-bridge/actions/workflows/ci.yml) and [container workflow](https://github.com/loopmakes/loop-event-bridge/actions/workflows/publish-image.yml). YAML parsing alone is not Swarm CLI validation. No release tag is to be published before those checks pass.
+Local pre-publication checks passed: `git diff --check`, `.env.example` shell syntax, stack YAML parsing, and local documentation paths/anchors. At that validation stage, the execution environment had no Go compiler or `gofmt`, so Go tests, race detection, vet, formatting, and builds depended on the exact published commit's [CI](https://github.com/loopmakes/loop-event-bridge/actions/workflows/ci.yml) and [container workflow](https://github.com/loopmakes/loop-event-bridge/actions/workflows/publish-image.yml). YAML parsing alone is not Swarm CLI validation. No release tag is to be published before those checks pass.
+
+## Interactive Proton email human verification (2026-10-07)
+
+The implementation uses the pinned SDK’s `GetHVDetails`, `SendVerificationCode`, and `NewClientWithLoginWithHVToken`, with the plain-email proof contract cross-checked against official Proton WebClients source. Only an exact advertised `email` method at the SDK’s `auth` step enables a hidden destination/code prompt. No live account authentication, verification email, CAPTCHA, browser-session reuse, or deployment was performed while developing this change. Real-account login and event delivery are still unverified.
+
+New synthetic tests cover allowlisted method reporting (including unknown/malformed/null details), separate ownership-email handling, a single email request and login continuation, fresh network deadlines outside prompts, code rejection, cancellation, no automatic retries, TOTP after human verification, account mismatch, encrypted success-only persistence, and unchanged existing ciphertext on failed authentication. Mock HTTP tests exercise the actual SDK email request, normal SRP proof generation from public synthetic test vectors, and human-verification headers on the one login continuation. The original challenge token is not reused as an email proof, headers do not leak onto auth-info or email-send requests, and rejected verification ends without further requests.
+
+After explicit operator approval, official Go 1.27.1 Linux/amd64 was installed in an isolated workspace toolchain directory. Its archive SHA-256 was verified against `go.dev` release metadata before extraction; no global executable was replaced.
+
+Local pre-publication checks passed:
+
+- `go test -count=1 ./...`, including all new synthetic challenge/session tests
+- `go test -race -count=1 ./...`
+- `go vet ./...`
+- `CGO_ENABLED=0 go build -trimpath ...`
+- `go mod verify`, clean `gofmt`, and `git diff --check`
+- Static-binary `proton-auth` smoke check: piped/non-terminal input is rejected before session access
+
+The existing browser-specific suite (requires `LOOP_BROWSER_TEST=1`), Docker/Swarm smoke tests, live account authentication, deployment, and release publication are not established by these checks. Exact-commit browser/container CI must still pass before a release tag is published.
