@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/netip"
@@ -92,15 +93,51 @@ func callbackClient() *http.Client {
 	return &http.Client{Timeout: 10 * time.Second, Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 func postSigned(ctx context.Context, c *http.Client, s Subscription, id string, body []byte) (int, []byte, error) {
+	status, response, _, err := postSignedObserved(ctx, c, s, id, body)
+	return status, response, err
+}
+
+type callbackDiagnostic struct {
+	ContentType      string
+	ResponseBytes    int
+	ResponseComplete bool
+	ErrorClass       string
+}
+
+// Classify rather than print arbitrary headers (including their parameters),
+// error strings or response content, all of which may contain credentials.
+func callbackContentType(raw string) string {
+	if raw == "" {
+		return "none"
+	}
+	media, _, err := mime.ParseMediaType(raw)
+	if err != nil {
+		return "invalid"
+	}
+	switch media {
+	case "application/json", "application/problem+json", "text/plain", "text/html":
+		return media
+	default:
+		return "other"
+	}
+}
+
+// Preserve postSigned's status/body/error semantics, including acknowledgment of
+// a 2xx with an unreadable body; the new fields are observational only.
+func postSignedObserved(ctx context.Context, c *http.Client, s Subscription, id string, body []byte) (int, []byte, callbackDiagnostic, error) {
+	diagnostic := callbackDiagnostic{ContentType: "none", ErrorClass: "none"}
 	if _, err := secretKey(s.Delivery.Secret); err != nil {
-		return 0, nil, err
+		diagnostic.ErrorClass = "invalid_signing_secret"
+		return 0, nil, diagnostic, err
 	}
 	if len(body) > 262144 {
-		return 413, nil, errors.New("payload too large")
+		diagnostic.ErrorClass = "payload_too_large"
+		return 413, nil, diagnostic, errors.New("payload too large")
 	}
 	req, e := http.NewRequestWithContext(ctx, "POST", s.Delivery.URL, bytes.NewReader(body))
 	if e != nil {
-		return 0, nil, e
+		diagnostic.ErrorClass = "request_invalid"
+		return 0, nil, diagnostic, e
 	}
 	stamp := strconv.FormatInt(time.Now().Unix(), 10)
 	sig := signature(s.Delivery.Secret, id, stamp, body)
@@ -114,14 +151,19 @@ func postSigned(ctx context.Context, c *http.Client, s Subscription, id string, 
 	req.Header.Set("X-MCP-Subscription-Id", s.ID)
 	res, e := c.Do(req)
 	if e != nil {
-		return 0, nil, errors.New("callback request failed")
+		diagnostic.ErrorClass = "request_failed"
+		return 0, nil, diagnostic, errors.New("callback request failed")
 	}
 	defer res.Body.Close()
+	diagnostic.ContentType = callbackContentType(res.Header.Get("Content-Type"))
 	b, e := io.ReadAll(io.LimitReader(res.Body, 8193))
+	diagnostic.ResponseBytes = len(b)
 	if e != nil || len(b) > 8192 {
-		return res.StatusCode, nil, errors.New("callback response invalid")
+		diagnostic.ErrorClass = "response_invalid"
+		return res.StatusCode, nil, diagnostic, errors.New("callback response invalid")
 	}
-	return res.StatusCode, b, nil
+	diagnostic.ResponseComplete = true
+	return res.StatusCode, b, diagnostic, nil
 }
 func verifyCallback(ctx context.Context, c *http.Client, s Subscription) error {
 	challenge := randomID()

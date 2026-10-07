@@ -147,6 +147,8 @@ Token values are excluded from logs, errors, and status responses. Environment v
 5. Confirm ChatGPT receives the test and responds. Then ask it to monitor the desired enabled source event (`github.notification.changed`, `gitlab.todo.changed`, or `proton.mail.received`) with `{}` and your instructions
 6. Test stopping monitoring, and verify `bridge_status` shows the subscription removed. Restart the service and confirm unchanged notifications are not resent
 
+If a webhook returns HTTP 2xx but the event payload or chat response is missing, use the [event correlation and diagnostic logging guide](docs/OPERATIONS.md#what-should-the-service-logs-show). Match enqueue, delivery and receiver evidence by event ID; HTTP receipt alone does not establish downstream processing.
+
 ## What should I keep in mind?
 
 Polling defaults to 300 seconds, with a 60-second minimum; GitHub can require a longer wait. Rapid updates may combine into one observation. There is no lossless event history, and retries can produce duplicates.

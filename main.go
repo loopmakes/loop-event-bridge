@@ -22,6 +22,19 @@ func env(k, d string) string {
 	return d
 }
 
+// A typo must not silently enable content logging. Never echo the environment
+// value: an operator could accidentally paste a credential into this setting.
+func loadEventDebugLog() (bool, error) {
+	switch os.Getenv("EVENT_DEBUG_LOG") {
+	case "", "false", "0":
+		return false, nil
+	case "true", "1":
+		return true, nil
+	default:
+		return false, errors.New("EVENT_DEBUG_LOG must be true, false, 1, or 0")
+	}
+}
+
 // loadGitHubToken prefers a configured file and never exposes its path or contents
 // in errors. A broken file configuration must not silently select another token.
 func loadGitHubToken() (string, error) {
@@ -86,6 +99,10 @@ func main() {
 			log.Fatal("usage: loop-event-bridge [healthcheck|emit-test|proton-auth]")
 		}
 	}
+	eventDebug, e := loadEventDebugLog()
+	if e != nil {
+		log.Fatal(e)
+	}
 	resource := strings.TrimSuffix(os.Getenv("PUBLIC_URL"), "/")
 	issuer := resource
 	oauth, e := NewEmbeddedOAuth(EmbeddedOAuthConfig{PublicURL: resource, ClientID: os.Getenv("OAUTH_CLIENT_ID"), RedirectURI: os.Getenv("OAUTH_REDIRECT_URI"), OwnerPasswordFile: os.Getenv("OWNER_PASSWORD_FILE"), StateFile: env("OAUTH_STATE_FILE", "/data/oauth.json")})
@@ -115,7 +132,7 @@ func main() {
 	if e != nil {
 		log.Fatal("state could not be loaded; refusing fresh baseline")
 	}
-	b := &Bridge{store: st, auth: oauth.Authenticate, authorizedOwner: oauth.AuthorizedOwner, callbacks: callbackClient(), hosts: hosts, account: account, resource: resource, issuer: issuer, verified: map[string]time.Time{}}
+	b := &Bridge{store: st, auth: oauth.Authenticate, authorizedOwner: oauth.AuthorizedOwner, callbacks: callbackClient(), hosts: hosts, account: account, resource: resource, issuer: issuer, verified: map[string]time.Time{}, eventDebug: eventDebug}
 	b.githubDisabled = !githubEnabled
 	b.sources = configuredSources()
 	var token string
@@ -155,7 +172,7 @@ func main() {
 		}(srv)
 	}
 	version, revision := buildIdentity()
-	log.Printf("experimental event bridge started version=%s revision=%s poll_interval=%s; account integration requires end-to-end verification", version, revision, time.Duration(secs)*time.Second)
+	log.Printf("experimental event bridge started version=%s revision=%s poll_interval=%s event_debug_log=%t; account integration requires end-to-end verification", version, revision, time.Duration(secs)*time.Second, eventDebug)
 	runnerDone := make(chan struct{})
 	go func() {
 		defer close(runnerDone)

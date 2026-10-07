@@ -119,6 +119,7 @@ func (b *Bridge) applySourceBatch(source sourceConfig, batch SourceBatch) (pollS
 		return pollStats{}, errors.New("source account changed; checkpoint not advanced")
 	}
 	b.pruneState(&next, time.Now())
+	queueStart := len(next.Queue)
 	stats := pollStats{Observed: len(batch.Observations)}
 	now := time.Now().UTC()
 	prefix := "source/" + source.Namespace + "/" + digest(batch.AccountID) + "/"
@@ -154,6 +155,7 @@ func (b *Bridge) applySourceBatch(source sourceConfig, batch SourceBatch) (pollS
 	if err := b.store.save(next); err != nil {
 		return pollStats{}, err
 	}
+	logEnqueuedEvents(next.Queue[queueStart:])
 	return stats, nil
 }
 

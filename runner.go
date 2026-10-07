@@ -29,6 +29,7 @@ func (b *Bridge) applyObservationsCounted(observations []Observation, accountID 
 	defer b.store.mu.Unlock()
 	next := b.store.copy()
 	b.pruneState(&next, time.Now())
+	queueStart := len(next.Queue)
 	if accountID == "" {
 		return pollStats{}, errors.New("GitHub account identity missing")
 	}
@@ -68,12 +69,14 @@ func (b *Bridge) applyObservationsCounted(observations []Observation, accountID 
 	if err := b.store.save(next); err != nil {
 		return pollStats{}, err
 	}
+	logEnqueuedEvents(next.Queue[queueStart:])
 	return stats, nil
 }
 func (b *Bridge) enqueueTest() error {
 	b.store.mu.Lock()
 	defer b.store.mu.Unlock()
 	next := b.store.copy()
+	queueStart := len(next.Queue)
 	now := time.Now().UTC()
 	n := 0
 	for id, s := range next.Subscriptions {
@@ -91,6 +94,7 @@ func (b *Bridge) enqueueTest() error {
 	if err := b.store.save(next); err != nil {
 		return err
 	}
+	logEnqueuedEvents(next.Queue[queueStart:])
 	log.Printf("bridge test queued enqueued=%d", n)
 	return nil
 }
@@ -135,8 +139,13 @@ func (b *Bridge) deliverOne(ctx context.Context) {
 		return
 	}
 	started := time.Now()
-	body, _ := json.Marshal(item.Event)
-	status, _, _ := postSigned(ctx, b.callbacks, s, item.Event.ID, body)
+	body, marshalErr := json.Marshal(item.Event)
+	name, source := eventLogLabels(item.Event.Name)
+	eventID, subscriptionRef := eventLogID(item.Event.ID), subscriptionLogRef(item.SubscriptionID)
+	fields, otherFields := eventLogDataFields(item.Event)
+	log.Printf("webhook delivery started event_id=%s event_name=%s source=%s subscription_ref=%s attempt=%d payload_bytes=%d payload_encoded=%t envelope_fields=eventId,name,timestamp,data,cursor data_fields=%s other_data_fields=%d", eventID, name, source, subscriptionRef, item.Attempts+1, len(body), marshalErr == nil, fields, otherFields)
+	b.logEventDebug(item.Event, item.SubscriptionID)
+	status, _, diagnostic, _ := postSignedObserved(ctx, b.callbacks, s, item.Event.ID, body)
 	b.store.mu.Lock()
 	defer b.store.mu.Unlock()
 	next := b.store.copy()
@@ -176,7 +185,7 @@ func (b *Bridge) deliverOne(ctx context.Context) {
 		httpStatus = 0
 	} // local size rejection, no HTTP request
 	pending, dead := queueCounts(b.store.state.Queue)
-	log.Printf("webhook delivery outcome=%s http_status=%d attempt=%d duration=%s retry_in=%s state_saved=%t pending=%d dead=%d", outcome, httpStatus, item.Attempts+1, time.Since(started).Round(time.Millisecond), retryAfter.Round(time.Millisecond), persisted, pending, dead)
+	log.Printf("webhook delivery outcome=%s http_status=%d attempt=%d duration=%s retry_in=%s state_saved=%t pending=%d dead=%d event_id=%s event_name=%s source=%s subscription_ref=%s transport_ack=%t response_content_type=%s response_bytes=%d response_complete=%t error_class=%s", outcome, httpStatus, item.Attempts+1, time.Since(started).Round(time.Millisecond), retryAfter.Round(time.Millisecond), persisted, pending, dead, eventID, name, source, subscriptionRef, status >= 200 && status < 300, diagnostic.ContentType, diagnostic.ResponseBytes, diagnostic.ResponseComplete, diagnostic.ErrorClass)
 }
 func (b *Bridge) run(ctx context.Context, github *http.Client, token string, interval time.Duration) {
 	var pollers sync.WaitGroup

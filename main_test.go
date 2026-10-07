@@ -6,6 +6,32 @@ import (
 	"testing"
 )
 
+func TestLoadEventDebugLog(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  bool
+		valid bool
+	}{
+		{"", false, true}, {"false", false, true}, {"0", false, true},
+		{"true", true, true}, {"1", true, true},
+		{"TRUE", false, false}, {"False", false, false}, {"t", false, false},
+		{"yes", false, false}, {"on", false, false}, {"2", false, false},
+		{" true", false, false}, {"true ", false, false}, {"\tfalse", false, false},
+		{"true\n", false, false}, {"synthetic-secret-value", false, false},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv("EVENT_DEBUG_LOG", tc.value)
+			got, err := loadEventDebugLog()
+			if got != tc.want || (err == nil) != tc.valid {
+				t.Fatalf("unexpected boolean or validity: %v %v", got, err)
+			}
+			if err != nil && err.Error() != "EVENT_DEBUG_LOG must be true, false, 1, or 0" {
+				t.Fatal("configuration error must not include the environment value")
+			}
+		})
+	}
+}
+
 func TestLoadGitHubToken(t *testing.T) {
 	// All values are synthetic, deliberately not GitHub token-shaped credentials.
 	for _, tc := range []struct {

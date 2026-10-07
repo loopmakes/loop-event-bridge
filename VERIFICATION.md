@@ -1,5 +1,15 @@
 # Verification record
 
+## Event-delivery correlation and opt-in payload diagnostics (2026-10-07)
+
+Base: `428f5de9e7fb95d0a0b6b8ae120d1d437de35796` (v0.2.3). Added durable enqueue/start/result correlation, bounded event-discovery reporting, subscription lifecycle traces, and content-free callback diagnostics. `EVENT_DEBUG_LOG=true` additionally logs bounded, sanitized event JSON with actual allowlisted source metadata. Default logging remains content-free. Neither the event wire format nor acknowledgment, retry, persistence or source behavior was changed.
+
+Passed locally with Go 1.27.1: full unit/mocked integration tests, full race suite, `go vet ./...`, static Linux/amd64 build, `go mod verify`, formatting, `git diff --check`, environment-file shell syntax, and Swarm YAML structure/interpolation checks. The built binary rejects an invalid debug-mode setting before OAuth/network startup without echoing its value. Independent review found no remaining actionable correctness or logging-safety issue.
+
+Synthetic regressions cover correlation across retries/restarts and multiple subscribers/sources, success-only persisted enqueue/subscription logs, concurrent discovery coalescing, local/transport/body failures, bounded response observations, preserved 2xx acknowledgment of invalid bodies, malicious IDs/field names/headers, default-off content logging, all current adapter metadata, primitive-only allowlisting, URL sanitization, Unicode control escaping, bounded valid JSON excerpts and sanitized-only hashes, and unchanged delivered event bytes. The [operations guide](docs/OPERATIONS.md#temporarily-inspect-event-metadata) describes the debugging mode's deliberate content exposure and its limits.
+
+Not performed locally: Docker/Swarm validation (Docker CLI unavailable), the opt-in native-browser suite, deployment, live source event generation, or receiver-side trace inspection. YAML parsing is not Docker stack validation. Publication checks must be verified for the exact commit/tag in CI. A transport HTTP 2xx and a passing synthetic suite do not establish that a receiver exposed an event payload to an automation or produced a chat response; the missing-payload cause remains unconfirmed without correlated receiver evidence. No previously acknowledged notification was replayed.
+
 ## Manual Proton browser CAPTCHA handoff (2026-10-07)
 
 Base: `4149138885d0ae46f9a430fd09daac765da514d6` (v0.2.2). The interactive CLI now supports an exact advertised `captcha` at the authentication step, using the official external-browser challenge URL, manual Enter confirmation, and one SDK continuation with the original challenge token. Email remains preferred when both are offered. No CAPTCHA solving, browser-cookie import, callback server, app-identity change, or unattended verification was added.

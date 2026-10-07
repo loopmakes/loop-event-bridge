@@ -16,6 +16,7 @@ import (
 )
 
 type Bridge struct {
+	eventDebug                bool
 	githubDisabled            bool
 	sources                   []sourceConfig
 	authorizedOwner           func(string) bool
@@ -26,6 +27,10 @@ type Bridge struct {
 	account, resource, issuer string
 	verifyMu                  sync.Mutex
 	verified                  map[string]time.Time
+	discoveryMu               sync.Mutex
+	discoveryLastLog          time.Time
+	discoveryNames            string
+	discoverySuppressed       int
 }
 type rpcRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -160,7 +165,9 @@ func (b *Bridge) call(ctx context.Context, owner, method string, raw json.RawMes
 		version, _ := buildIdentity()
 		return map[string]any{"supportedVersions": []string{"2026-07-28"}, "capabilities": map[string]any{"events": map[string]any{}, "tools": map[string]any{}}, "_meta": map[string]any{"io.modelcontextprotocol/serverInfo": map[string]string{"name": "loop-event-bridge", "version": version}}}, nil
 	case "events/list":
-		return map[string]any{"events": b.eventDefinitions()}, nil
+		definitions := b.eventDefinitions()
+		b.logEventDiscovery(definitions)
+		return map[string]any{"events": definitions}, nil
 	case "tools/list":
 		return map[string]any{"tools": []any{map[string]any{"name": "bridge_status", "description": "Read bridge polling and delivery health. Never returns secrets or callback URLs.", "inputSchema": objectSchema(map[string]any{}, []string{}), "annotations": map[string]any{"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}, "securitySchemes": []any{map[string]any{"type": "oauth2", "scopes": []string{"events:read"}}}}}, "ttlMs": 60000, "cacheScope": "private"}, nil
 	case "tools/call":
@@ -220,6 +227,8 @@ func (b *Bridge) call(ctx context.Context, owner, method string, raw json.RawMes
 			if b.store.save(next) != nil {
 				return nil, &rpcError{-32603, "storage unavailable", nil}
 			}
+			name, source := eventLogLabels(p.Name)
+			log.Printf("event subscription action=unsubscribe event_name=%s source=%s subscription_ref=%s state_saved=true", name, source, subscriptionLogRef(id))
 			return map[string]any{}, nil
 		}
 		if _, e := secretKey(p.Delivery.Secret); e != nil {
@@ -271,10 +280,13 @@ func (b *Bridge) call(ctx context.Context, owner, method string, raw json.RawMes
 			s.RotateUntil = old.RotateUntil
 		}
 		s.Expires = time.Now().UTC().Add(ttl)
+		_, refreshed := next.Subscriptions[id]
 		next.Subscriptions[id] = s
 		if b.store.save(next) != nil {
 			return nil, &rpcError{-32603, "storage unavailable", nil}
 		}
+		name, source := eventLogLabels(s.Name)
+		log.Printf("event subscription action=subscribe event_name=%s source=%s subscription_ref=%s refreshed=%t expires_at=%s state_saved=true", name, source, subscriptionLogRef(id), refreshed, s.Expires.Format(time.RFC3339))
 		return map[string]any{"id": id, "refreshBefore": s.Expires, "cursor": nil, "truncated": len(p.Cursor) > 0 && string(p.Cursor) != "null"}, nil
 	default:
 		return nil, &rpcError{-32601, "Method not found", nil}
