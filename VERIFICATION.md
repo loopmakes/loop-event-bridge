@@ -54,3 +54,11 @@ Not completed in this environment:
 - Real GitLab/Proton login, Proton free-account access/application-version acceptance, real mail events, and Swarm/Traefik/ChatGPT end-to-end acceptance
 
 At this validation stage, no branch, PR, image, release, or deployment had been published. Prior unpublished work outside this isolated checkout was not included.
+
+## Proton identity and diagnostic fix (2026-10-07)
+
+Credential-free GET checks with `x-pm-appversion: Other` returned HTTP 200 / API code 1000 at both `https://mail.proton.me/api/auth/v4/modulus` and `https://mail-api.proton.me/auth/v4/modulus` during 04:47–04:48 UTC. No cookies, account credentials, authenticated login, or deployment were used. This establishes public-endpoint compatibility only; see the [operator guide](docs/proton.md#application-identity-and-compatibility-configuration) for the limits and pinned third-party consumer evidence. Human/email verification remains unsupported.
+
+The patch adds eleven synthetic regression groups for conservative identity validation, application-version error classification, wrapped SDK errors, allowlisted authentication stages, malformed responses, concurrent trace isolation, per-request status reset, safe status/log persistence, once-only bootstrap, and refresh failure/retry behavior without session replacement.
+
+Local pre-publication checks passed: `git diff --check`, `.env.example` shell syntax, stack YAML parsing, and local documentation paths/anchors. This execution environment has no Go compiler or `gofmt`, so Go tests, race detection, vet, formatting, and builds must be established by the exact published commit's [CI](https://github.com/loopmakes/loop-event-bridge/actions/workflows/ci.yml) and [container workflow](https://github.com/loopmakes/loop-event-bridge/actions/workflows/publish-image.yml). YAML parsing alone is not Swarm CLI validation. No release tag is to be published before those checks pass.

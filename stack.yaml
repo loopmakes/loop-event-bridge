@@ -31,6 +31,8 @@ services:
       PROTON_ACCOUNT_ID: ${PROTON_ACCOUNT_ID:-}
       PROTON_SESSION_FILE: ${PROTON_SESSION_FILE:-/data/proton-session.json}
       PROTON_SESSION_KEY_FILE: /run/secrets/proton_session_key
+      # Explicit compatibility identity (Other), not a frontend version.
+      # No runtime default; see docs/proton.md for the verification limits.
       PROTON_APP_VERSION: ${PROTON_APP_VERSION:-}
       # First-login bootstrap only: uncomment with BOTH matching secret blocks.
       # After a session is saved, remove these variables/mounts and redeploy.

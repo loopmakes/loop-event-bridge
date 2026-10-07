@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -58,6 +57,7 @@ type ProtonAdapter struct {
 	closed             bool
 	bootstrapPending   bool
 	reauthRequired     bool
+	authFailure        *ProtonAuthRequiredError
 	bootstrapAttempted bool
 	login              func(context.Context, string, []byte) (*proton.Client, proton.Auth, error)
 }
@@ -66,8 +66,8 @@ func validateProtonConfig(c ProtonConfig, requireAccount bool) error {
 	if c.SessionFile == "" || c.SessionKeyFile == "" || c.SessionFile == c.SessionKeyFile {
 		return errors.New("Proton requires separate session and key files")
 	}
-	if c.AppVersion == "" || len(c.AppVersion) > 128 || strings.ContainsAny(c.AppVersion, "\r\n\t ") {
-		return errors.New("Proton requires an explicit application version")
+	if !validProtonAppVersion(c.AppVersion) {
+		return &protonAppVersionConfigError{}
 	}
 	if requireAccount && !validProtonID(c.AccountID) {
 		return errors.New("Proton requires the account ID returned by proton-auth")
@@ -76,6 +76,27 @@ func validateProtonConfig(c ProtonConfig, requireAccount bool) error {
 		return errors.New("invalid Proton account ID")
 	}
 	return nil
+}
+
+// Reject unsafe header values and bare numeric frontend versions. Other
+// explicit identifiers are left to Proton: not all clients use the common
+// platform-product@version convention, and local syntax cannot prove access.
+func validProtonAppVersion(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	bareVersion, hasDigit := true, false
+	for _, ch := range value {
+		if ch <= ' ' || ch >= 127 {
+			return false
+		}
+		if ch >= '0' && ch <= '9' {
+			hasDigit = true
+		} else if ch != '.' {
+			bareVersion = false
+		}
+	}
+	return !(bareVersion && hasDigit)
 }
 
 func NewProtonAdapter(c ProtonConfig) (*ProtonAdapter, error) {
@@ -146,9 +167,10 @@ func (a *ProtonAdapter) connect(ctx context.Context) error {
 	if err = protonCheckConfiguredUsername(a.config, saved); err != nil {
 		return err
 	}
-	client, auth, err := a.manager.NewClientWithRefresh(ctx, saved.UID, saved.RefreshToken)
+	refreshCtx := protonAuthContext(ctx)
+	client, auth, err := a.manager.NewClientWithRefresh(refreshCtx, saved.UID, saved.RefreshToken)
 	if err != nil {
-		return protonSessionRefreshError(err)
+		return protonSessionRefreshError(refreshCtx, err)
 	}
 	// Persist a rotated refresh token before any other network operation. A write
 	// failure latches the store closed, preventing this process from going on with
@@ -160,10 +182,17 @@ func (a *ProtonAdapter) connect(ctx context.Context) error {
 	client.AddAuthHandler(func(auth proton.Auth) {
 		_ = a.session.save(protonRefreshedSession(saved, auth))
 	})
-	user, err := client.GetUser(ctx)
+	userCtx := protonAuthContext(ctx)
+	user, err := client.GetUser(userCtx)
 	if err != nil {
 		client.Close()
-		return a.classifyAPIError(err, "Proton account verification failed")
+		classified := a.classifyAPIError(err, "Proton account verification failed")
+		var required *ProtonAuthRequiredError
+		if errors.As(classified, &required) {
+			required.diagnostic = protonLoginError(userCtx, protonStageUser, err)
+			return required
+		}
+		return protonLoginError(userCtx, protonStageUser, err)
 	}
 	if user.ID != saved.AccountID {
 		client.Close()
@@ -186,6 +215,9 @@ func (a *ProtonAdapter) Poll(ctx context.Context, rawCursor string) (SourceBatch
 		return SourceBatch{}, errors.New("Proton adapter is closed")
 	}
 	if a.reauthRequired {
+		if a.authFailure != nil {
+			return a.failure(a.authFailure)
+		}
 		return a.failure(&ProtonAuthRequiredError{})
 	}
 	ctx, cancel := context.WithTimeout(protonPollContext(ctx), 2*time.Minute)
@@ -204,6 +236,7 @@ func (a *ProtonAdapter) Poll(ctx context.Context, rawCursor string) (SourceBatch
 		var required *ProtonAuthRequiredError
 		if errors.As(err, &required) {
 			a.reauthRequired = true
+			a.authFailure = required
 		}
 		return a.failure(err)
 	}
@@ -403,9 +436,13 @@ func protonRefreshedSession(previous protonSavedSession, auth proton.Auth) proto
 func (a *ProtonAdapter) classifyAPIError(err error, fallback string) error {
 	var apiErr *proton.APIError
 	var required *ProtonAuthRequiredError
-	if errors.As(err, &required) || (errors.As(err, &apiErr) && (apiErr.Status == http.StatusUnauthorized || apiErr.Code == proton.AuthRefreshTokenInvalid || apiErr.Code == proton.HumanVerificationRequired || apiErr.Code == proton.PaidPlanRequired)) {
+	if errors.As(err, &required) || protonAppVersionError(err) || (errors.As(err, &apiErr) && (apiErr.Status == http.StatusUnauthorized || apiErr.Code == proton.AuthRefreshTokenInvalid || apiErr.Code == proton.HumanVerificationRequired || apiErr.Code == proton.PaidPlanRequired)) {
 		a.reauthRequired = true
-		return &ProtonAuthRequiredError{}
+		if required == nil {
+			required = &ProtonAuthRequiredError{diagnostic: protonLoginError(context.Background(), protonStageUnknown, err)}
+		}
+		a.authFailure = required
+		return required
 	}
 	return errors.New(fallback)
 }

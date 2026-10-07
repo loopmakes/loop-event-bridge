@@ -56,7 +56,7 @@ func main() {
 				log.Fatal(e)
 			}
 			if e := RunProtonAuth(context.Background(), config, os.Stdin, os.Stdout); e != nil {
-				log.Fatal("Proton authentication failed: ", e)
+				log.Fatal("proton-auth: ", e)
 			}
 			return
 		case "healthcheck":

@@ -2,7 +2,25 @@
 
 The optional Proton source uses Proton's own [`go-proton-api`](https://github.com/ProtonMail/go-proton-api/tree/390fd389be646b9ac79bc848f57a198e0573c517), pinned to `v0.0.0-20261002101729-390fd389be64`. It polls the direct event API. It does not use IMAP, Proton Mail Bridge, Hydroxide, mailbox key decryption, or a paid-plan workaround.
 
-Only synthetic tests have been run. Successful real-account login, free-account access, event delivery, and Proton acceptance of this application's version are **not established**. The API/client can change, refuse an application, request human verification, or restrict an account. This integration must fail closed in those cases; do not misrepresent another official application's identity to evade restrictions.
+Account/authentication tests use synthetic data. Successful real-account login, free-account access, and event delivery are **not established**. The explicit compatibility identity below passed credential-free public-endpoint checks; those checks do not establish authenticated access or Proton endorsement. The API/client can change, refuse an application, request human verification, or restrict an account. This integration must fail closed in those cases; do not misrepresent another official application's identity to evade restrictions.
+
+## Application identity and compatibility configuration
+
+Set the complete application identity explicitly:
+
+```sh
+PROTON_APP_VERSION='Other'
+```
+
+`Other` is the current recommended compatibility value. On **2026-10-07, 04:47–04:48 UTC**, credential-free GET requests with `x-pm-appversion: Other` returned **HTTP 200 / API code 1000** at both `https://mail.proton.me/api/auth/v4/modulus` (this integration's endpoint) and `https://mail-api.proton.me/auth/v4/modulus`. Existing third-party clients also use this value. It does not claim to be Proton's web client or official Bridge. This is evidence of acceptance at those public endpoints, **not** vendor endorsement, an integration registration, or proof of successful login, account eligibility, free-plan access, human/email verification, or event delivery. Proton can change this compatibility behavior.
+
+The binary deliberately keeps this setting explicit: there is no automatic identity discovery or runtime default. The SDK's default `go-proton-api` is explicitly unsuitable for production, and `WithAppVersion` sends the supplied value unchanged. Operators no longer need to find or copy a frontend release number. Existing v0.2.0 already accepts the explicit `Other` value; this patch adds earlier invalid-value detection and safe diagnostics.
+
+A bare frontend version such as `5.0.134.11` is not an application identity: Proton rejects it with API code **2064**, before account credentials can be checked. A common first-party convention is `platform-product@version`, but it is not a universal grammar. Local validation therefore rejects only bare numeric frontend versions, whitespace/control characters, non-ASCII header values, and oversized values. Other explicit identifiers, including `Other`, are passed to Proton for validation. It does not enforce three-component semantic versions or block identifiers merely for omitting a dash or `@`.
+
+Two invented product identities were rejected in credential-free checks on the same date: `linux-loop_event_bridge@0.1.0` returned HTTP **400** / API **2064**, and `external-mail-loop_event_bridge@0.1.0-stable` returned HTTP **400** / API **5002**. These are rejected research candidates, not configuration examples. Their rejection does not show that all third-party identities fail. Proton's Drive-specific external-client naming policy does not establish a Mail naming policy. Do not substitute `web-mail`, `linux-bridge`, or another first-party identity to evade an access restriction.
+
+If `Other` is rejected or a later authentication challenge appears, preserve the safe diagnostics below and stop. Do not repeatedly restart password login, bypass verification, or assume that a public modulus check validates account access.
 
 ## Persistent-service setup
 
@@ -15,7 +33,7 @@ The normal unattended path can bootstrap from username/password, then reuse an e
 | `PROTON_USERNAME_FILE`, `PROTON_PASSWORD_FILE` | Private mounted files; each takes strict precedence over its environment value |
 | `PROTON_SESSION_FILE` | Encrypted persistent session; default `/data/proton-session.json` |
 | `PROTON_SESSION_KEY_FILE` | Separate private file containing exactly 32 **raw bytes** |
-| `PROTON_APP_VERSION` | Required application/version value accepted by Proton; no default or impersonated identifier |
+| `PROTON_APP_VERSION` | Explicit application identity; recommended compatibility value `Other`, public-endpoint tested as described above |
 | `PROTON_ACCOUNT_ID` | Optional immutable account-ID pin, learned from operator login or authenticated session |
 
 Docker secrets are preferable to environment passwords because environment variables can be inspected by container administrators and may appear in diagnostic output. Secret files must be regular files, private to the service UID (`0400` or `0600`), and cannot be final-component symlinks. A configured missing/unreadable/empty file fails; it never silently falls back to an environment value. Secret-file trailing CR/LF is stripped; other password whitespace is preserved. Use directories controlled by the operator.
@@ -29,7 +47,7 @@ openssl rand -out /secure/proton-session.key 32
 
 Keep this key outside the session's data volume and backups, and mount it read-only. The image runs as UID/GID `65532`; Swarm secret mounts should specify that ownership and `mode: 0400`. A key is still required when username/password bootstrap is used. Losing or replacing it makes the old session unreadable and requires deliberate recovery. Do not point the session file at `state.json`, OAuth storage, or the key file.
 
-For Swarm, use the commented optional mounts in [`../stack.yaml`](../stack.yaml). Supply an application/version value accepted by Proton, mount both bootstrap secrets plus the session-encryption key, and enable the source. No actual account bootstrap or deployment was performed while developing this change.
+Use the commented optional mounts in [`../stack.yaml`](../stack.yaml) for Swarm. Explicitly configure `PROTON_APP_VERSION=Other`, mount both bootstrap secrets plus the session-encryption key, and enable the source only when ready for an authorized authentication attempt. No actual account bootstrap or deployment was performed while developing this change.
 
 On the first poll, the adapter makes at most **one password-login attempt per process**, verifies the immutable user ID, saves only the encrypted refresh session, and starts a no-notification metadata baseline. If login needs TOTP, FIDO2, human verification, or any other intervention, it stops attempting password login for that process and reports operator action required. A deliberate service restart can retry after the operator resolves the problem. It does not repeatedly try passwords every polling interval. Confirmed revoked/invalid-refresh authentication discovered later also marks `needsAction` and stops further authenticated polling for that process; ordinary network errors remain retryable.
 
@@ -39,10 +57,10 @@ A missing session permits bootstrap. A corrupt, unreadable, wrong-key, or mismat
 
 ## Optional interactive authentication
 
-`proton-auth` is a fallback for TOTP accounts or operators who do not want to configure bootstrap credentials. It requires an actual Unix terminal, uses no-echo username/password/TOTP prompts, and rejects piped credentials. It never asks for a separate mailbox password. TOTP is supported; FIDO2-only and human-verification challenges are not automated.
+`proton-auth` is a fallback for TOTP accounts or operators who do not want to configure bootstrap credentials. It requires an actual Unix terminal, uses no-echo username/password/TOTP prompts, and rejects piped credentials. It never asks for a separate mailbox password. TOTP is supported; FIDO2-only and human-verification challenges, including email verification, are not implemented. Correcting an application identity does not implement or bypass any later verification challenge.
 
 1. Keep the source disabled while retaining the mounted encryption key and writable persistent data volume. Other sources may keep running. If it was already enabled, disable/restart it first so its lifetime session lock is released
-2. Set `PROTON_SESSION_FILE`, `PROTON_SESSION_KEY_FILE`, and the accepted `PROTON_APP_VERSION`; optionally set `PROTON_ACCOUNT_ID`
+2. Set `PROTON_SESSION_FILE`, `PROTON_SESSION_KEY_FILE`, and `PROTON_APP_VERSION=Other`; optionally set `PROTON_ACCOUNT_ID`
 3. Run on the server with a terminal:
 
 ```sh
@@ -55,6 +73,18 @@ docker exec -it <bridge-container> /loop-event-bridge proton-auth
 For a standalone Unix installation, run `./loop-event-bridge proton-auth` with those variables set and appropriate private paths. The command takes no credential flags. Existing session ciphertext must be valid and decryptable before the CLI can replace it, and reauthentication must remain on its saved account. Changing accounts intentionally requires distinct bridge state and session files.
 
 The session uses AES-256-GCM with random nonces and authenticated version context. Writes are atomic, `0600`, and fsynced along with the containing directory. Refresh-token rotations are synchronously persisted before further authenticated requests; a persistence error stops that session for the process. The session lock prevents simultaneous service/CLI writers and releases automatically when a process exits. A crash between Proton rotating a token and local persistence can still require manual reauthentication; no client-side file transaction can make the remote and local operations atomic.
+
+## Safe authentication diagnostics
+
+Authentication errors retain only locally selected wording and these safe fields:
+
+- `stage`: an allowlisted authentication step (`configuration`, `login`, `auth-info`, `auth`, `totp`, `user`, `refresh`, `modulus`, or `unknown`). `configuration` means local validation failed before authentication. For an SDK operation involving several requests, this identifies its last observed request, not a claim that a later local SRP/proof calculation succeeded
+- `http_status`: numeric HTTP status, or `0` if unavailable
+- `api_code`: numeric Proton API error code, or `0` if unavailable/unparseable
+
+Example of a rejected identity: `invalid Proton application-version configuration ... (stage=auth-info http_status=400 api_code=2064)`. Code **2064** covers invalid platform/product identity, not just a missing dash; **5002** also identifies invalid version configuration. Codes **5001** and **5003** remain application-version failures. Code **9001** remains an unsupported human-verification challenge, potentially including email verification. An unknown provider error remains a generic authentication failure with the same safe numeric fields.
+
+The CLI never prints SDK error chains, response bodies, headers, request URLs, usernames, passwords, TOTP codes, access/refresh tokens, or human-verification details. A malformed non-JSON error response still preserves an available HTTP status. The service keeps sanitized authentication diagnostics in source status and logs; a latched failure retains them without attempting login again. Failed bootstrap does not create a session, and a rejected refresh does not replace the existing encrypted session. Ordinary network/temporary refresh failures remain retryable; confirmed authentication/configuration rejections require operator action.
 
 ## Events, restart, and reconciliation
 
@@ -80,6 +110,12 @@ Tests use mock SDK HTTP responses, fake mailbox events, temporary synthetic cred
 
 Primary API references at the pin:
 
+- [`manager_builder.go`](https://github.com/ProtonMail/go-proton-api/blob/390fd389be646b9ac79bc848f57a198e0573c517/manager_builder.go): verbatim `x-pm-appversion` header and explicit production-default warning
+- [`proton-cal` application identity and SDK configuration](https://github.com/cheeseandcereal/proton-cal/blob/5ff2791a0823ffbd592c3c95808819d40d4e639a/pkg/papi/papi.go#L32-L62): third-party consumer of the official library using `Other`
+- [`simplelogin-proton-contacts` session setup](https://github.com/nimser/simplelogin-proton-contacts/blob/0bc66498c14c20c595467c70b09f320ddc59ed3d/internal/protonx/session.go#L27): another direct official-library consumer using `Other`; neither consumer is a Proton endorsement of this integration
+- [Official Bridge identity construction](https://github.com/ProtonMail/proton-bridge/blob/b9c5dac1651437100c40896dacd778a0518a26f2/internal/constants/version_default.go) and [platform/product constants](https://github.com/ProtonMail/proton-bridge/blob/b9c5dac1651437100c40896dacd778a0518a26f2/internal/constants/constants.go): first-party format evidence, not permission to reuse its identity
+- [Proton Drive SDK personal-project guidelines](https://github.com/ProtonDriveApps/sdk#usage-guidelines-for-personal-projects): Drive-specific external-client naming; does not establish a Mail identity
+- [Mail API application-registration question](https://github.com/ProtonMail/go-proton-api/issues/227): an open question, not an accepted registration procedure or identity
 - [`manager_auth.go`](https://github.com/ProtonMail/go-proton-api/blob/390fd389be646b9ac79bc848f57a198e0573c517/manager_auth.go): SRP login and refresh
 - [`event.go`](https://github.com/ProtonMail/go-proton-api/blob/390fd389be646b9ac79bc848f57a198e0573c517/event.go) and [`event_types.go`](https://github.com/ProtonMail/go-proton-api/blob/390fd389be646b9ac79bc848f57a198e0573c517/event_types.go): direct events and refresh flags
 - [`message.go`](https://github.com/ProtonMail/go-proton-api/blob/390fd389be646b9ac79bc848f57a198e0573c517/message.go) and [`server/server_test.go`](https://github.com/ProtonMail/go-proton-api/blob/390fd389be646b9ac79bc848f57a198e0573c517/server/server_test.go): metadata-only and inclusive `EndID` pagination

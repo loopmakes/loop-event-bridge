@@ -16,9 +16,14 @@ import (
 
 // ProtonAuthRequiredError is safe to expose in source status. It deliberately
 // carries no provider response, username, credential, path, or underlying error.
-type ProtonAuthRequiredError struct{}
+type ProtonAuthRequiredError struct {
+	diagnostic *protonAuthError
+}
 
-func (*ProtonAuthRequiredError) Error() string {
+func (e *ProtonAuthRequiredError) Error() string {
+	if e.diagnostic != nil {
+		return e.diagnostic.Error()
+	}
 	return "Proton authentication requires operator action; check bootstrap credentials or run proton-auth"
 }
 
@@ -58,12 +63,12 @@ func protonCheckConfiguredUsername(c ProtonConfig, saved protonSavedSession) err
 	}
 	return nil
 }
-func protonSessionRefreshError(err error) error {
+func protonSessionRefreshError(ctx context.Context, err error) error {
 	var apiErr *proton.APIError
-	if errors.As(err, &apiErr) && (apiErr.Code == proton.AuthRefreshTokenInvalid || apiErr.Status == 400 || apiErr.Status == 401 || apiErr.Status == 422) {
-		return &ProtonAuthRequiredError{}
+	if protonAppVersionError(err) || (errors.As(err, &apiErr) && (apiErr.Code == proton.AuthRefreshTokenInvalid || apiErr.Code == proton.HumanVerificationRequired || apiErr.Code == proton.PaidPlanRequired || apiErr.Status == 400 || apiErr.Status == 401 || apiErr.Status == 422)) {
+		return &ProtonAuthRequiredError{diagnostic: protonLoginError(ctx, protonStageRefresh, err)}
 	}
-	return errors.New("Proton session refresh failed")
+	return protonLoginError(ctx, protonStageRefresh, err)
 }
 
 func (a *ProtonAdapter) bootstrap(ctx context.Context) error {
@@ -90,10 +95,11 @@ func (a *ProtonAdapter) bootstrap(ctx context.Context) error {
 	if a.login == nil {
 		a.login = a.manager.NewClientWithLogin
 	}
-	client, auth, err := a.login(ctx, strings.TrimSpace(string(username)), password)
+	loginCtx := protonAuthContext(ctx)
+	client, auth, err := a.login(loginCtx, strings.TrimSpace(string(username)), password)
 	clear(password)
 	if err != nil {
-		return &ProtonAuthRequiredError{}
+		return &ProtonAuthRequiredError{diagnostic: protonLoginError(loginCtx, protonStageLogin, err)}
 	}
 	success := false
 	defer func() {
@@ -126,8 +132,12 @@ func (a *ProtonAdapter) bootstrap(ctx context.Context) error {
 			_ = a.session.save(saved)
 		}
 	})
-	user, err := client.GetUser(ctx)
-	if err != nil || !validProtonID(user.ID) || (a.config.AccountID != "" && user.ID != a.config.AccountID) || (auth.UserID != "" && auth.UserID != user.ID) {
+	userCtx := protonAuthContext(ctx)
+	user, err := client.GetUser(userCtx)
+	if err != nil {
+		return &ProtonAuthRequiredError{diagnostic: protonLoginError(userCtx, protonStageUser, err)}
+	}
+	if !validProtonID(user.ID) || (a.config.AccountID != "" && user.ID != a.config.AccountID) || (auth.UserID != "" && auth.UserID != user.ID) {
 		return &ProtonAuthRequiredError{}
 	}
 	authMu.Lock()

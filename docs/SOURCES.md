@@ -69,7 +69,7 @@ The optional adapter uses the official [ProtonMail/go-proton-api](https://github
 - `PROTON_ACCOUNT_ID`: optional extra stable-account-ID pin. Persisted session identity is checked to prevent accidental account switches; one Proton account is supported per instance
 - `PROTON_SESSION_FILE`: defaults to `/data/proton-session.json` on the writable persistent volume
 - `PROTON_SESSION_KEY_FILE`: path to a separate mounted encryption-key file containing exactly **32 raw random bytes**, not hex or base64 text. Use private `0400`/`0600` file permissions
-- `PROTON_APP_VERSION`: required explicit application version supplied to the Proton API; there is no default. Confirm an accepted value through your Proton client/operator workflow; see the [operator guide](proton.md) for compatibility caveats
+- `PROTON_APP_VERSION`: explicitly set `Other`, a compatibility identity tested on credential-free public endpoints; not a copied frontend version. There is no automatic runtime default. Public-endpoint acceptance does not establish login, email verification, or account-level access; see [identity details and limits](proton.md#application-identity-and-compatibility-configuration)
 - `PROTON_USERNAME_FILE` and `PROTON_PASSWORD_FILE`: optional first-login bootstrap credentials from mounted private files, preferred over environment values
 - `PROTON_USERNAME` and `PROTON_PASSWORD`: fallback bootstrap values only when each corresponding file variable is unset or empty. A configured file takes precedence and a broken file does not silently fall back. Do not put values in `.env`, image layers, logs, or source control
 
@@ -81,7 +81,7 @@ For Swarm:
 
 1. Create your private 32-byte key secret and username/password bootstrap secrets through your secure operator workflow. Set their **names** in `.env`, never their values
 2. Uncomment the `proton_session_key`, `proton_username`, and `proton_password` service mounts and matching top-level secret declarations in `stack.yaml`. Uncomment `PROTON_USERNAME_FILE` and `PROTON_PASSWORD_FILE` in the service environment too
-3. Set an accepted `PROTON_APP_VERSION`, keep `PROTON_SESSION_FILE` on `/data`, and enable `PROTON_ENABLED=true`. `PROTON_ACCOUNT_ID` is an optional additional pin
+3. Explicitly configure `PROTON_APP_VERSION=Other`, keep `PROTON_SESSION_FILE` on `/data`, and enable `PROTON_ENABLED=true`. `PROTON_ACCOUNT_ID` is an optional additional pin
 4. Reload configuration, validate the stack, redeploy, and inspect `bridge_status.sources.proton`
 5. After the encrypted session is saved successfully, remove the username/password environment variables and bootstrap secret mounts/declarations, then redeploy. Keep the session file and encryption key. Remove both inputs: a still-configured username file remains subject to identity checks. This removes the login password from the running service's configuration; Swarm secrets themselves remain until you retire them through your normal workflow
 
@@ -89,7 +89,7 @@ The bridge never writes the password or a TOTP code into the session or shared s
 
 ### When operator authentication is needed
 
-2FA, CAPTCHA/human verification, or FIDO2 challenges require operator action; the persistent service does not try to bypass them or repeatedly retry password login. Do not use an automatic restart loop to keep attempting rejected credentials.
+2FA, CAPTCHA/human verification (including email verification), or FIDO2 challenges require operator action; the persistent service does not try to bypass them or repeatedly retry password login. Do not use an automatic restart loop to keep attempting rejected credentials. Safe authentication diagnostics report an allowlisted stage, HTTP status, and numeric API code; codes 2064/5001/5002/5003 identify application-version configuration failures. See [diagnostic details](proton.md#safe-authentication-diagnostics).
 
 `/loop-event-bridge proton-auth` is an optional interactive fallback. It has no credential flags and reads its own username, password, and supported TOTP challenge from a no-echo terminal. It can save the same encrypted refresh session without retaining the password, TOTP, mailbox password, or decryption keys. It cannot complete CAPTCHA/human verification or FIDO2-only authentication. Stop Proton polling before running it against the same session; one process must own session refresh at a time. Other sources can stay enabled while Proton is disabled for this operation.
 

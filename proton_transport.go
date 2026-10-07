@@ -45,8 +45,10 @@ func (t *protonTransport) RoundTrip(request *http.Request) (*http.Response, erro
 			return nil, err
 		}
 	}
+	recordProtonAuthResponse(request, 0)
 	response, err := t.base.RoundTrip(request)
 	if response != nil {
+		recordProtonAuthResponse(request, response.StatusCode)
 		if response.StatusCode >= 300 && response.StatusCode < 400 {
 			response.Body.Close()
 			return nil, errors.New("Proton API redirect refused")

@@ -39,7 +39,7 @@ func bootstrapProtonAdapter(t *testing.T) (*ProtonAdapter, *int) {
 	t.Helper()
 	store, path, key := protonTestStore(t)
 	store.close()
-	a, err := NewProtonAdapter(ProtonConfig{SessionFile: path, SessionKeyFile: key, AppVersion: "test@1", Username: "operator", Password: "synthetic-password"})
+	a, err := NewProtonAdapter(ProtonConfig{SessionFile: path, SessionKeyFile: key, AppVersion: "linux-test@1.0.0", Username: "operator", Password: "synthetic-password"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestProtonBootstrapCannotReplaceExistingSession(t *testing.T) {
 	store.close()
 	original := []byte("corrupt-private-existing-session")
 	os.WriteFile(path, original, 0600)
-	_, err := NewProtonAdapter(ProtonConfig{SessionFile: path, SessionKeyFile: key, AppVersion: "test@1", Username: "operator", Password: "synthetic"})
+	_, err := NewProtonAdapter(ProtonConfig{SessionFile: path, SessionKeyFile: key, AppVersion: "linux-test@1.0.0", Username: "operator", Password: "synthetic"})
 	if err == nil {
 		t.Fatal("corrupt session allowed bootstrap")
 	}
@@ -138,7 +138,7 @@ func TestProtonSavedSessionIgnoresMissingPasswordFile(t *testing.T) {
 	store, path, key := protonTestStore(t)
 	store.save(protonSavedSession{AccountID: "account", UID: "session", RefreshToken: "refresh", LoginHash: protonUsernameHash("operator")})
 	store.close()
-	a, err := NewProtonAdapter(ProtonConfig{SessionFile: path, SessionKeyFile: key, AppVersion: "test@1", Username: "operator", PasswordFile: "/definitely-missing-password"})
+	a, err := NewProtonAdapter(ProtonConfig{SessionFile: path, SessionKeyFile: key, AppVersion: "linux-test@1.0.0", Username: "operator", PasswordFile: "/definitely-missing-password"})
 	if err != nil {
 		t.Fatal(err)
 	}

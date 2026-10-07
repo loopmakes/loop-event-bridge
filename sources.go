@@ -24,7 +24,25 @@ type sourceConfig struct {
 	Name, Namespace, EventName string
 	Adapter                    SourceAdapter
 	InitError                  bool
+	InitDiagnostic             sourceInitDiagnostic
 }
+
+// Only allowlisted local reasons survive initialization; never save an
+// arbitrary provider, filesystem, or credential error for logs/status.
+type sourceInitDiagnostic uint8
+
+const (
+	sourceInitUnknown sourceInitDiagnostic = iota
+	sourceInitProtonAppVersion
+)
+
+func (source sourceConfig) initializationError() error {
+	if source.InitDiagnostic == sourceInitProtonAppVersion {
+		return &protonAppVersionConfigError{}
+	}
+	return errors.New("source configuration unavailable")
+}
+
 type SourceState struct {
 	AccountID   string
 	Cursor      string
@@ -78,7 +96,7 @@ func (b *Bridge) sourceStatusesLocked() map[string]sourceStatus {
 		state := b.store.state.Sources[source.Namespace]
 		status := sourceStatus{Enabled: true, LastPoll: state.LastPoll, LastError: state.LastError, Failures: state.Failures, NeedsAction: state.NeedsAction}
 		if source.InitError {
-			status.LastError = "source configuration unavailable"
+			status.LastError = source.initializationError().Error()
 			status.NeedsAction = true
 		}
 		out[source.Name] = status
@@ -150,7 +168,7 @@ func (b *Bridge) sourcePollOnce(ctx context.Context, source sourceConfig, interv
 	if source.Name == "proton" && checkpoint.Baseline && cursor == "" {
 		err = errors.New("Proton checkpoint missing; refusing a fresh baseline")
 	} else if source.InitError || source.Adapter == nil {
-		err = errors.New("source configuration unavailable")
+		err = source.initializationError()
 	} else {
 		pollCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		batch, err = source.Adapter.Poll(pollCtx, cursor)
@@ -174,8 +192,19 @@ func (b *Bridge) sourcePollOnce(ctx context.Context, source sourceConfig, interv
 		state.LastError = "source polling failed; check source configuration or reauthenticate"
 		var authRequired *ProtonAuthRequiredError
 		state.NeedsAction = errors.As(err, &authRequired)
+		var appVersionConfig *protonAppVersionConfigError
+		invalidAppVersion := errors.As(err, &appVersionConfig)
+		var authDiagnostic *protonAuthError
+		_ = errors.As(err, &authDiagnostic)
 		if state.NeedsAction {
 			state.LastError = authRequired.Error()
+			authDiagnostic = authRequired.diagnostic
+		} else if authDiagnostic != nil {
+			state.LastError = authDiagnostic.Error()
+		}
+		if invalidAppVersion {
+			state.NeedsAction = true
+			state.LastError = appVersionConfig.Error()
 		}
 		state.Failures = failures
 		next.Sources[source.Namespace] = state
@@ -185,6 +214,12 @@ func (b *Bridge) sourcePollOnce(ctx context.Context, source sourceConfig, interv
 		b.store.mu.Unlock()
 		// Never log provider errors: URLs, credentials and response contents may occur.
 		log.Printf("source poll failed source=%s failures=%d", source.Name, failures)
+		if authDiagnostic != nil {
+			log.Printf("source authentication diagnostic source=%s stage=%s http_status=%d api_code=%d", source.Name, authDiagnostic.stage, authDiagnostic.httpStatus, authDiagnostic.apiCode)
+		}
+		if invalidAppVersion {
+			log.Printf("source configuration diagnostic source=%s reason=invalid_application_version stage=configuration http_status=0 api_code=0", source.Name)
+		}
 	} else {
 		failures = 0
 		log.Printf("source poll complete source=%s observed=%d changed=%d baseline=%d enqueued=%d duration=%s", source.Name, stats.Observed, stats.Changed, stats.Baseline, stats.Enqueued, time.Since(started).Round(time.Millisecond))

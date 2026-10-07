@@ -56,12 +56,12 @@ func RunProtonAuth(ctx context.Context, c ProtonConfig, in *os.File, out io.Writ
 	defer clear(password)
 	manager, _ := newProtonManager(c.AppVersion, nil)
 	defer manager.Close()
-	requestCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	requestCtx, cancel := context.WithTimeout(protonAuthContext(ctx), time.Minute)
 	client, auth, err := manager.NewClientWithLogin(requestCtx, strings.TrimSpace(string(username)), password)
 	cancel()
 	clear(password)
 	if err != nil {
-		return protonLoginError(err)
+		return protonLoginError(requestCtx, protonStageLogin, err)
 	}
 	defer client.Close()
 	var authMu sync.Mutex
@@ -91,21 +91,21 @@ func RunProtonAuth(ctx context.Context, c ProtonConfig, in *os.File, out io.Writ
 		if err != nil {
 			return err
 		}
-		requestCtx, cancel = context.WithTimeout(ctx, time.Minute)
+		requestCtx, cancel = context.WithTimeout(protonAuthContext(ctx), time.Minute)
 		err = client.Auth2FA(requestCtx, proton.Auth2FAReq{TwoFactorCode: string(code)})
 		cancel()
 		clear(code)
 		if err != nil {
-			return protonLoginError(err)
+			return protonLoginError(requestCtx, protonStageTOTP, err)
 		}
 	default:
 		return errors.New("this Proton account requires an authentication method this CLI does not support; FIDO2-only login is unavailable")
 	}
-	requestCtx, cancel = context.WithTimeout(ctx, time.Minute)
+	requestCtx, cancel = context.WithTimeout(protonAuthContext(ctx), time.Minute)
 	user, err := client.GetUser(requestCtx)
 	cancel()
 	if err != nil {
-		return protonLoginError(err)
+		return protonLoginError(requestCtx, protonStageUser, err)
 	}
 	if !validProtonID(user.ID) || (c.AccountID != "" && user.ID != c.AccountID) {
 		return errors.New("Proton account does not match configured account ID")
@@ -142,18 +142,4 @@ func protonTerminalSecret(in *os.File, out io.Writer, prompt string) ([]byte, er
 		return nil, errors.New("Proton interactive input unavailable or invalid")
 	}
 	return value, nil
-}
-func protonLoginError(err error) error {
-	var apiErr *proton.APIError
-	if errors.As(err, &apiErr) {
-		switch apiErr.Code {
-		case proton.HumanVerificationRequired:
-			return errors.New("Proton requires human verification; this CLI cannot complete that challenge, so no session was saved")
-		case proton.PaidPlanRequired:
-			return errors.New("Proton rejected this account's API access; no paid-account workaround is enabled")
-		case proton.AppVersionBadCode, proton.AppVersionMissingCode:
-			return errors.New("Proton rejected the configured application version; confirm an accepted PROTON_APP_VERSION with Proton")
-		}
-	}
-	return errors.New("Proton authentication failed; check the account, password, TOTP, and API access, then retry manually")
 }

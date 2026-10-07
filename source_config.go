@@ -86,6 +86,10 @@ func configuredSources() []sourceConfig {
 			adapter, err := NewProtonAdapter(config)
 			if err != nil {
 				source.InitError = true
+				var appVersionConfig *protonAppVersionConfigError
+				if errors.As(err, &appVersionConfig) {
+					source.InitDiagnostic = sourceInitProtonAppVersion
+				}
 			} else {
 				source.Adapter = adapter
 			}

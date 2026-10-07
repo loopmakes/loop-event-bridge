@@ -160,14 +160,14 @@ func TestProtonAuthRequiresTerminalBeforeNetworkOrFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer input.Close()
-	err = RunProtonAuth(context.Background(), ProtonConfig{SessionFile: "unused", SessionKeyFile: "unused-key", AppVersion: "test@1"}, input, io.Discard)
+	err = RunProtonAuth(context.Background(), ProtonConfig{SessionFile: "unused", SessionKeyFile: "unused-key", AppVersion: "linux-test@1.0.0"}, input, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "interactive terminal") {
 		t.Fatalf("unexpected CLI failure: %v", err)
 	}
 }
 func TestProtonLoginErrorsAreSanitized(t *testing.T) {
 	for _, code := range []proton.Code{proton.HumanVerificationRequired, proton.PaidPlanRequired, proton.AppVersionBadCode, proton.PasswordWrong} {
-		err := protonLoginError(&proton.APIError{Code: code, Message: "PRIVATE_PASSWORD", Details: []byte("PRIVATE_TOKEN")})
+		err := protonLoginError(context.Background(), protonStageLogin, &proton.APIError{Code: code, Message: "PRIVATE_PASSWORD", Details: []byte("PRIVATE_TOKEN")})
 		if strings.Contains(err.Error(), "PRIVATE") {
 			t.Fatal("upstream secret leaked")
 		}
@@ -210,7 +210,7 @@ func TestProtonSDKRefreshIsPersistedAndAccountVerified(t *testing.T) {
 			return protonTestResponse(request, 500, `{"Code":1}`), nil
 		}
 	})}
-	manager := proton.New(proton.WithTransport(transport), proton.WithAppVersion("test@1"), proton.WithRetryCount(0), proton.WithLogger(protonQuietLogger{}))
+	manager := proton.New(proton.WithTransport(transport), proton.WithAppVersion("linux-test@1.0.0"), proton.WithRetryCount(0), proton.WithLogger(protonQuietLogger{}))
 	a := &ProtonAdapter{config: ProtonConfig{AccountID: "account"}, session: store, manager: manager, transport: transport}
 	defer a.Close()
 	batch, err := a.Poll(context.Background(), "")
