@@ -129,7 +129,7 @@ func (e *protonAuthError) Error() string {
 	message := "Proton authentication failed; check account access and credentials, then retry manually"
 	switch e.apiCode {
 	case proton.HumanVerificationRequired:
-		message = "Proton requires human verification; proton-auth supports email when offered"
+		message = "Proton requires human verification; proton-auth supports email or manual browser CAPTCHA when offered"
 	case proton.PaidPlanRequired:
 		message = "Proton rejected this account's API access; no paid-account workaround is enabled"
 	case protonAppVersionInvalidCode, protonAppVersionFormatCode:

@@ -92,6 +92,8 @@ type protonInteractiveHarness struct {
 	initialErr  error
 	sendErr     error
 	replayErr   error
+	hvMethod    string
+	hvToken     string
 	userStatus  int
 	userID      string
 	twoFA       proton.TwoFAStatus
@@ -114,6 +116,7 @@ func newProtonInteractiveHarness(t *testing.T) *protonInteractiveHarness {
 		userID:      "account",
 		totpStatus:  http.StatusOK,
 		promptErrAt: -1,
+		hvMethod:    "email",
 	}
 	transport := &protonTransport{base: protonRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		switch request.Method + " " + request.URL.Path {
@@ -168,7 +171,11 @@ func newProtonInteractiveHarness(t *testing.T) *protonInteractiveHarness {
 		replay: func(ctx context.Context, username string, password []byte, hv *proton.APIHVDetails) (*proton.Client, proton.Auth, error) {
 			h.replays++
 			checkRequest(ctx)
-			if ctx == h.initialCtx || username != h.inputs[0] || string(password) != h.inputs[1] || hv == nil || len(hv.Methods) != 1 || hv.Methods[0] != "email" || hv.Token != h.inputs[2]+":"+h.inputs[3] {
+			expectedToken := h.hvToken
+			if h.hvMethod == "email" {
+				expectedToken = h.inputs[2] + ":" + h.inputs[3]
+			}
+			if ctx == h.initialCtx || username != h.inputs[0] || string(password) != h.inputs[1] || hv == nil || len(hv.Methods) != 1 || hv.Methods[0] != h.hvMethod || hv.Token != expectedToken {
 				t.Fatal("incorrect SDK verification proof or expired request context")
 			}
 			if h.replayErr != nil {

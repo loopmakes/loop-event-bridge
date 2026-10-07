@@ -1,5 +1,17 @@
 # Verification record
 
+## Manual Proton browser CAPTCHA handoff (2026-10-07)
+
+Base: `4149138885d0ae46f9a430fd09daac765da514d6` (v0.2.2). The interactive CLI now supports an exact advertised `captcha` at the authentication step, using the official external-browser challenge URL, manual Enter confirmation, and one SDK continuation with the original challenge token. Email remains preferred when both are offered. No CAPTCHA solving, browser-cookie import, callback server, app-identity change, or unattended verification was added.
+
+Protocol evidence is pinned in [the operator guide](docs/proton.md#verification-and-sources). Proton's external-browser redeemable-proof implementation was added on [2026-08-11](https://github.com/ProtonMail/WebClients/commit/df2f2b0545ed0b3785b7b83927d13457a510df65), after the February report of standalone verification failing. This source evidence establishes the intended flow, not deployment or account acceptance for this integration.
+
+Passed locally with Go 1.27.1: full unit/mocked integration suite, full race suite, `go vet ./...`, static Linux/amd64 build, formatting, and `git diff --check`. Independent review found no blocking code or privacy issue and also passed tests/race/vet. New real Linux PTY tests passed for redirected-output rejection before session access and empty Enter handling; credential prompts still reject empty input. A final focused race check also passed for the unattended CAPTCHA no-URL/no-retry regression added after the full-race run began.
+
+Synthetic tests cover original-token SDK headers only on the single `auth` continuation, normal SRP proof generation, CAPTCHA-only and mixed-method handling, optional TOTP, account checks, encoded fixed-origin URLs, unsafe/missing tokens, unsupported authentication stages, cancellation, output failure, rejected/expired/repeated challenges, and unchanged existing ciphertext on failure. The private challenge URL is an explicit terminal-only display exception; returned errors, background status/logs, and persisted sessions remain token-free.
+
+Not performed: live Proton login/CAPTCHA, browser challenge completion, real-account/free-plan acceptance, actual event delivery, or deployment. Docker is unavailable locally; tagged CI performs container, browser, multiarchitecture build, and anonymous image-pull checks. Publication status must be established from the exact commit/tag's GitHub Actions results.
+
 Prepared on 2026-10-04 using the official Go 1.27.1 Linux/amd64 toolchain.
 
 ## Local checks

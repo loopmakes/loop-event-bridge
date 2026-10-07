@@ -25,6 +25,10 @@ func RunProtonAuth(ctx context.Context, c ProtonConfig, in *os.File, out io.Writ
 	if in == nil || !term.IsTerminal(int(in.Fd())) {
 		return errors.New("proton-auth requires an interactive terminal; passwords cannot be piped")
 	}
+	terminalOut, ok := out.(*os.File)
+	if !ok || terminalOut == nil || !term.IsTerminal(int(terminalOut.Fd())) {
+		return errors.New("proton-auth requires terminal output; private verification links cannot be redirected")
+	}
 	manager, _ := newProtonManager(c.AppVersion, nil)
 	defer manager.Close()
 	return runProtonInteractiveAuth(ctx, c, out, func(prompt string) ([]byte, error) {
@@ -160,7 +164,7 @@ func protonTerminalSecret(in *os.File, out io.Writer, prompt string) ([]byte, er
 	}
 	value, err := term.ReadPassword(int(in.Fd()))
 	_, _ = fmt.Fprintln(out)
-	if err != nil || len(value) == 0 || len(value) > 4096 {
+	if err != nil || len(value) > 4096 {
 		clear(value)
 		return nil, errors.New("Proton interactive input unavailable or invalid")
 	}
